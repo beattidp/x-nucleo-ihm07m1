@@ -1,0 +1,12 @@
+{
+  "thought-auto-logger": {
+    "enabled": true,
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "python3 .agents/skills/thought-logger/scripts/log_thoughts.py",
+        "timeout": 15
+      }
+    ]
+  }
+}
