@@ -2,7 +2,7 @@
 #include "motor_control.h"
 #include "motor_profiles.h"
 #include "motor_characterization.h"
-#include "ihm07m1.h"
+#include "power_stage.h"
 #include <string.h>
 
 UART_HandleTypeDef hlpuart1;
@@ -173,18 +173,22 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     uint32_t hours = sec / 3600;
     uint32_t minutes = (sec % 3600) / 60;
     uint32_t seconds = sec % 60;
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
 
     /* Reposition cursor at Row 1, Column 1 */
     printf("\033[H");
     printf("================================================================================\033[K\r\n");
-    printf("      STM32G474RE + X-NUCLEO-IHM07M1 -- BLDC MOTOR EVALUATION DASHBOARD        \033[K\r\n");
+    printf("      STM32G474RE + %s -- BLDC MOTOR EVALUATION DASHBOARD        \033[K\r\n",
+           caps ? caps->board_name : "POWER STAGE");
     printf("================================================================================\033[K\r\n");
     printf(" Port   : LPUART1 (PA2/PA3) @ 115200 (Buffered) | CPU Clock: 170 MHz | PWM: 20 kHz\033[K\r\n");
     printf(" Uptime : %02u:%02u:%02u                         | Sample: #%05u  [Heartbeat: %c]\033[K\r\n",
            (unsigned int)hours, (unsigned int)minutes, (unsigned int)seconds, 
            (unsigned int)telem->sample_count, heartbeat);
     printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" POWER STAGE TELEMETRY (X-NUCLEO-IHM07M1)\033[K\r\n");
+    printf(" POWER STAGE TELEMETRY (%s - %s)\033[K\r\n",
+           caps ? caps->board_name : "UNKNOWN",
+           caps ? caps->driver_ic : "UNKNOWN");
     printf("--------------------------------------------------------------------------------\033[K\r\n");
 
     /* Bus Voltage */
@@ -206,7 +210,8 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     }
 
     /* Driver Status & Fault */
-    printf(" Driver Status (L6230 DIAG) : ");
+    const char* drv_name = (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230";
+    printf(" Driver Status (%s DIAG) : ", drv_name);
     if (telem->fault_active) {
         printf("\033[1;31m[FAULT / OVERCURRENT TRIPPED]\033[0m\033[K\r\n");
     } else {
@@ -253,8 +258,9 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     printf(" Target / Estimated Speed   : Target %4d RPM | Est %4d RPM (%s)\033[K\r\n",
            tgt_int, spd_int, (ctrl->direction > 0) ? "CW" : "CCW");
     printf(" Commanded Torque Limit     : %4.2f A (Software Regulated Ceiling)\033[K\r\n", ctrl->torque_limit_amps);
+    uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
     printf(" Active Modulated Duty      : %4.1f %% (Base %4.1f %% | ARR = %u)\033[K\r\n",
-           ctrl->active_duty_pct, ctrl->duty_pct, IHM07M1_PWM_ARR);
+           ctrl->active_duty_pct, ctrl->duty_pct, arr);
 
     /* Phase Currents */
     int ia_ma = (int)(telem->current_a_amps * 1000.0f);
@@ -264,7 +270,8 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     printf(" Phase Currents (mA)        : IA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]\033[K\r\n",
            ia_ma, ib_ma, ic_ma, ipk_ma);
 
-    printf(" Hardware Break Trip Limit  : %.2f A (L6230 OCD Break on PA6)\033[K\r\n", ctrl->current_limit_amps);
+    printf(" Hardware Break Trip Limit  : %.2f A (%s OCD Break)\033[K\r\n",
+           ctrl->current_limit_amps, drv_name);
 
     printf("================================================================================\033[K\r\n");
     printf(" INTERACTIVE COMMANDS:                                                          \033[K\r\n");
@@ -282,10 +289,12 @@ void Console_RenderCharDashboard(const MotorTelemetry_t* telem, const MotorContr
     uint8_t progress = MotorChar_GetProgressPct();
     const CharResults_t* res = MotorChar_GetResults();
     CharState_t state = MotorChar_GetState();
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
 
     printf("\033[H");
     printf("================================================================================\033[K\r\n");
-    printf("      STM32G474RE + X-NUCLEO-IHM07M1 -- MOTOR CHARACTERIZATION ROUTINE         \033[K\r\n");
+    printf("      STM32G474RE + %s -- MOTOR CHARACTERIZATION ROUTINE         \033[K\r\n",
+           caps ? caps->board_name : "POWER STAGE");
     printf("================================================================================\033[K\r\n");
     printf(" Port   : LPUART1 (PA2/PA3) @ 115200 (Buffered) | CPU Clock: 170 MHz | PWM: 20 kHz\033[K\r\n");
     printf(" Status : %-50s [Heartbeat: %c]\033[K\r\n", res->status_msg, heartbeat);

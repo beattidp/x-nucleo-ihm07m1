@@ -1,8 +1,7 @@
 #include "motor_control.h"
 #include "motor_profiles.h"
 #include "motor_characterization.h"
-#include "ihm07m1.h"
-#include "stm32g4xx_ll_adc.h"
+#include "power_stage.h"
 #include <math.h>
 
 #define PI_FLOAT                    3.14159265358979323846f
@@ -56,58 +55,13 @@ static volatile int32_t s_phase_step = 0;
 static volatile uint32_t s_active_ccr_scale = 0;
 static float g_open_loop_angle = 0.0f;
 
-/* Read a single ADC channel synchronously without HAL_GetTick() timeout dependency */
-static uint16_t ReadADCChannel(uint32_t channel) {
-    if (!LL_ADC_IsEnabled(hadc1.Instance)) {
-        return 0;
-    }
-
-    /* Set target channel on Rank 1 and configure sampling time */
-    LL_ADC_REG_SetSequencerRanks(hadc1.Instance, LL_ADC_REG_RANK_1, channel);
-    LL_ADC_SetChannelSamplingTime(hadc1.Instance, channel, LL_ADC_SAMPLINGTIME_47CYCLES_5);
-
-    /* Clear EOC and EOS flags */
-    LL_ADC_ClearFlag_EOC(hadc1.Instance);
-    LL_ADC_ClearFlag_EOS(hadc1.Instance);
-
-    /* Start regular conversion */
-    LL_ADC_REG_StartConversion(hadc1.Instance);
-
-    /* Cycle-based timeout: conversion takes ~1.4 us (~240 cycles at 170 MHz) */
-    uint32_t timeout = 5000;
-    while (!LL_ADC_IsActiveFlag_EOC(hadc1.Instance)) {
-        if (--timeout == 0) {
-            LL_ADC_REG_StopConversion(hadc1.Instance);
-            return 0;
-        }
-    }
-    return (uint16_t)LL_ADC_REG_ReadConversionData12(hadc1.Instance);
-}
-
 /* Quiescent zero-current ADC offsets (measured at boot when bridge is off) */
 static uint16_t g_raw_offset_a = 2048;
 static uint16_t g_raw_offset_b = 2048;
 static uint16_t g_raw_offset_c = 2048;
 
 void Motor_CalibrateCurrentOffsets(void) {
-    /* Ensure bridge is completely disabled and settled */
-    IHM07M1_DisableBridge();
-    for (volatile int i = 0; i < 2000; i++);
-
-    uint32_t sum_a = 0;
-    uint32_t sum_b = 0;
-    uint32_t sum_c = 0;
-    const uint16_t num_samples = 64;
-
-    for (uint16_t i = 0; i < num_samples; i++) {
-        sum_a += ReadADCChannel(IHM07M1_ADC_CURR_A_CH);
-        sum_b += ReadADCChannel(IHM07M1_ADC_CURR_B_CH);
-        sum_c += ReadADCChannel(IHM07M1_ADC_CURR_C_CH);
-    }
-
-    g_raw_offset_a = (uint16_t)(sum_a / num_samples);
-    g_raw_offset_b = (uint16_t)(sum_b / num_samples);
-    g_raw_offset_c = (uint16_t)(sum_c / num_samples);
+    PowerStage_CalibrateCurrentOffsets(&g_raw_offset_a, &g_raw_offset_b, &g_raw_offset_c);
 }
 
 void Motor_Init(void) {
@@ -121,15 +75,14 @@ void Motor_Init(void) {
     g_motor_ctrl.current_freq_hz = 0.0f;
     g_motor_ctrl.pot_control_enabled = true;
 
-    IHM07M1_Init();
-    IHM07M1_DisableBridge();
+    PowerStage_Init();
+    PowerStage_DisableBridge();
 
     /* Initialize motor profiles and apply default profile to drive */
     MotorProfiles_Init();
 
     /* Read initial potentiometer position (0 - 100%) and set target speed */
-    uint16_t raw_pot = ReadADCChannel(IHM07M1_ADC_POT_CH);
-    g_telemetry.pot_pct = ((float)raw_pot / 4095.0f) * 100.0f;
+    g_telemetry.pot_pct = PowerStage_ReadPotentiometer();
     float min_s = (g_motor_ctrl.min_rpm > 50.0f) ? g_motor_ctrl.min_rpm : MOTOR_POT_MIN_RPM;
     float max_s = (g_motor_ctrl.max_rpm > min_s) ? g_motor_ctrl.max_rpm : MOTOR_POT_MAX_RPM;
     float init_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
@@ -159,15 +112,15 @@ void Motor_ApplyProfile(const MotorProfile_t* prof) {
     float new_target_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
     Motor_SetSpeed(new_target_rpm);
 
-    /* Update hardware current trip threshold on PB4 */
-    IHM07M1_SetCurrentReference(prof->hw_break_trip_amps);
+    /* Update hardware current trip threshold */
+    PowerStage_SetCurrentTripThreshold(prof->hw_break_trip_amps);
 }
 
 void Motor_StartCharacterization(void) {
     Motor_ResetFault();
-    IHM07M1_ClearFault();
-    IHM07M1_DisableBridge();
-    IHM07M1_StopPWM();
+    PowerStage_ClearFault();
+    PowerStage_DisableBridge();
+    PowerStage_StopPWM();
     g_motor_ctrl.actual_speed_rpm = 0.0f;
     g_motor_ctrl.current_freq_hz = 0.0f;
     s_phase_step = 0;
@@ -177,8 +130,10 @@ void Motor_StartCharacterization(void) {
 }
 
 void Motor_SetTorqueLimit(float amps) {
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
+    float max_a = caps ? caps->max_continuous_current_a : 1.4f;
     if (amps < 0.3f) amps = 0.3f;
-    if (amps > 1.4f) amps = 1.4f; /* Safe continuous limit for L6230 (1.4A RMS) */
+    if (amps > max_a) amps = max_a;
     g_motor_ctrl.torque_limit_amps = amps;
 }
 
@@ -210,10 +165,10 @@ void Motor_Start(void) {
         g_open_loop_angle = 0.0f;
         s_phase_accum = 0;
         s_phase_step = 0;
-        s_active_ccr_scale = (uint32_t)((g_motor_ctrl.duty_pct / 100.0f) * (float)IHM07M1_PWM_ARR);
-        IHM07M1_EnablePhase(0x07);
-        IHM07M1_StartPWM();
-        IHM07M1_SetRedLED(false);
+        s_active_ccr_scale = (uint32_t)((g_motor_ctrl.duty_pct / 100.0f) * (float)PowerStage_GetCapabilities()->pwm_arr);
+        PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
+        PowerStage_StartPWM();
+        PowerStage_SetStatusLED(false);
     }
 }
 
@@ -227,8 +182,8 @@ void Motor_Stop(void) {
     g_motor_ctrl.actual_speed_rpm = 0.0f;
     s_phase_step = 0;
     s_active_ccr_scale = 0;
-    IHM07M1_DisableBridge();
-    IHM07M1_StopPWM();
+    PowerStage_DisableBridge();
+    PowerStage_StopPWM();
 }
 
 void Motor_Brake(void) {
@@ -238,7 +193,7 @@ void Motor_Brake(void) {
 }
 
 void Motor_SetDuty(float duty_pct) {
-    if (duty_pct < 15.0f) duty_pct = 15.0f;
+    if (duty_pct < 5.0f) duty_pct = 5.0f;
     if (duty_pct > 75.0f) duty_pct = 75.0f; /* Clamp to safe 75% maximum */
     g_motor_ctrl.duty_pct = duty_pct;
 }
@@ -273,8 +228,8 @@ void Motor_SetMode(MotorMode_t mode) {
 }
 
 void Motor_ResetFault(void) {
-    IHM07M1_ClearFault();
-    IHM07M1_SetRedLED(false);
+    PowerStage_ClearFault();
+    PowerStage_SetStatusLED(false);
     if (g_motor_ctrl.state == MOTOR_STATE_FAULT) {
         g_motor_ctrl.state = MOTOR_STATE_STOPPED;
     }
@@ -291,41 +246,30 @@ void Motor_Update1ms(void) {
     g_telemetry.sample_count++;
 
     /* 1. Hardware Fault Check */
-    if (IHM07M1_IsFaultActive()) {
+    if (PowerStage_IsFaultActive()) {
         g_motor_ctrl.state = MOTOR_STATE_FAULT;
         g_telemetry.fault_active = true;
-        IHM07M1_DisableBridge();
-        IHM07M1_SetRedLED(true);
+        PowerStage_DisableBridge();
+        PowerStage_SetStatusLED(true);
         return;
     }
     g_telemetry.fault_active = false;
+
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
 
     /* 2. Read Telemetry Sensors */
     /* Sample slow telemetry channels periodically (every 50 ms) to minimize ADC overhead */
     static uint8_t s_slow_telem_div = 0;
     if (++s_slow_telem_div >= 50) {
         s_slow_telem_div = 0;
-
-        /* Bus Voltage */
-        uint16_t raw_vbus = ReadADCChannel(IHM07M1_ADC_VBUS_CH);
-        float adc_v = ((float)raw_vbus / 4095.0f) * 3.3f;
-        g_telemetry.vbus_v = adc_v * IHM07M1_VBUS_DIVIDER_RATIO;
-
-        /* Potentiometer */
-        uint16_t raw_pot = ReadADCChannel(IHM07M1_ADC_POT_CH);
-        g_telemetry.pot_pct = ((float)raw_pot / 4095.0f) * 100.0f;
-
-        /* Temperature (Linearized NTC approximation around 25C) */
-        uint16_t raw_temp = ReadADCChannel(IHM07M1_ADC_TEMP_CH);
-        float temp_v = ((float)raw_temp / 4095.0f) * 3.3f;
-        g_telemetry.temp_c = 25.0f + (1.65f - temp_v) * 35.0f;
-        if (g_telemetry.temp_c < 0.0f) g_telemetry.temp_c = 0.0f;
+        g_telemetry.vbus_v = PowerStage_ReadVBusVoltage();
+        g_telemetry.pot_pct = PowerStage_ReadPotentiometer();
+        g_telemetry.temp_c = PowerStage_ReadTemperature();
     }
 
     /* Current Shunts with Calibrated Zero-Current Baseline Subtraction */
-    uint16_t raw_ia = ReadADCChannel(IHM07M1_ADC_CURR_A_CH);
-    uint16_t raw_ib = ReadADCChannel(IHM07M1_ADC_CURR_B_CH);
-    uint16_t raw_ic = ReadADCChannel(IHM07M1_ADC_CURR_C_CH);
+    uint16_t raw_ia = 0, raw_ib = 0, raw_ic = 0;
+    PowerStage_ReadRawCurrentSensors(&raw_ia, &raw_ib, &raw_ic);
 
     int32_t diff_a = (int32_t)raw_ia - (int32_t)g_raw_offset_a;
     int32_t diff_b = (int32_t)raw_ib - (int32_t)g_raw_offset_b;
@@ -335,9 +279,10 @@ void Motor_Update1ms(void) {
     if (diff_b < 0) diff_b = -diff_b;
     if (diff_c < 0) diff_c = -diff_c;
 
-    g_telemetry.current_a_amps = (((float)diff_a / 4095.0f) * 3.3f) / IHM07M1_CURRENT_SENSE_GAIN;
-    g_telemetry.current_b_amps = (((float)diff_b / 4095.0f) * 3.3f) / IHM07M1_CURRENT_SENSE_GAIN;
-    g_telemetry.current_c_amps = (((float)diff_c / 4095.0f) * 3.3f) / IHM07M1_CURRENT_SENSE_GAIN;
+    float gain = (caps && caps->current_sense_gain > 0.001f) ? caps->current_sense_gain : 0.5049f;
+    g_telemetry.current_a_amps = (((float)diff_a / 4095.0f) * 3.3f) / gain;
+    g_telemetry.current_b_amps = (((float)diff_b / 4095.0f) * 3.3f) / gain;
+    g_telemetry.current_c_amps = (((float)diff_c / 4095.0f) * 3.3f) / gain;
 
     float p_curr = g_telemetry.current_a_amps;
     if (g_telemetry.current_b_amps > p_curr) p_curr = g_telemetry.current_b_amps;
@@ -345,7 +290,7 @@ void Motor_Update1ms(void) {
     g_telemetry.current_peak_amps = p_curr;
 
     /* Hall Sensors */
-    g_telemetry.hall_state = IHM07M1_ReadHallSensors();
+    g_telemetry.hall_state = PowerStage_ReadHallSensors();
 
     /* If characterizing, delegate to characterization engine */
     if (g_motor_ctrl.state == MOTOR_STATE_CHARACTERIZING) {
@@ -379,7 +324,7 @@ void Motor_Update1ms(void) {
     }
 
     if (g_motor_ctrl.state == MOTOR_STATE_STOPPED) {
-        IHM07M1_DisableBridge();
+        PowerStage_DisableBridge();
         g_motor_ctrl.actual_speed_rpm = 0.0f;
         g_motor_ctrl.current_freq_hz = 0.0f;
         s_phase_step = 0;
@@ -471,8 +416,8 @@ void Motor_Update1ms(void) {
             if (s_overcurrent_timer_ms > 1500) {
                 g_motor_ctrl.state = MOTOR_STATE_FAULT;
                 g_telemetry.fault_active = true;
-                IHM07M1_DisableBridge();
-                IHM07M1_SetRedLED(true);
+                PowerStage_DisableBridge();
+                PowerStage_SetStatusLED(true);
                 return;
             }
         } else if (s_overcurrent_timer_ms > 0) {
@@ -487,18 +432,31 @@ void Motor_Update1ms(void) {
         /* Proportional foldback: up to 15% duty reduction per 1.0 A excess current */
         float over_i = s_filt_current - current_thresh;
         duty_torque_adjust = over_i * 15.0f;
-        if (duty_torque_adjust > (duty_bemf - 12.0f)) {
-            duty_torque_adjust = duty_bemf - 12.0f; /* Maintain minimal 12% duty */
+        if (duty_torque_adjust > (duty_bemf - 4.0f)) {
+            duty_torque_adjust = duty_bemf - 4.0f;
         }
     }
 
     float active_duty = duty_bemf - duty_torque_adjust;
-    if (active_duty < 12.0f) active_duty = 12.0f;
-    if (active_duty > 75.0f) active_duty = 75.0f;
-    g_motor_ctrl.active_duty_pct = active_duty;
+
+    /* 4.5 Supply Voltage Feedforward Scaling: Scale duty inversely with bus voltage */
+    float vbus = (g_telemetry.vbus_v > 8.0f) ? g_telemetry.vbus_v : 12.0f;
+    const MotorProfile_t* active_prof = MotorProfiles_GetActive();
+    float rated_v = (active_prof && active_prof->rated_voltage_v > 8.0f) ? active_prof->rated_voltage_v : 12.0f;
+    float v_scale = rated_v / vbus;
+    if (v_scale > 1.5f) v_scale = 1.5f;
+    if (v_scale < 0.35f) v_scale = 0.35f;
+
+    float scaled_active_duty = active_duty * v_scale;
+    float min_duty_clamp = 4.0f * (12.0f / vbus);
+    if (min_duty_clamp < 2.0f) min_duty_clamp = 2.0f;
+    if (scaled_active_duty < min_duty_clamp) scaled_active_duty = min_duty_clamp;
+    if (scaled_active_duty > 75.0f) scaled_active_duty = 75.0f;
+    g_motor_ctrl.active_duty_pct = scaled_active_duty;
 
     /* Update parameters for the ultrafast 20 kHz TIM1 Update ISR */
-    s_active_ccr_scale = (uint32_t)((active_duty / 100.0f) * (float)IHM07M1_PWM_ARR);
+    uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
+    s_active_ccr_scale = (uint32_t)((scaled_active_duty / 100.0f) * (float)arr);
 
     /* Phase step per 20 kHz PWM cycle: step = (freq * 2^32) / 20000 = freq * 214748.3648 */
     int32_t step = (int32_t)(active_freq * 214748.3648f);
@@ -512,41 +470,41 @@ void Motor_Update1ms(void) {
 
     /* 5. Phase Hardware Enable Control */
     if (g_motor_ctrl.mode == MOTOR_MODE_OPEN_LOOP_CHAR) {
-        IHM07M1_EnablePhase(0x07); /* Enable all 3 half bridges for 20 kHz sinusoidal drive */
+        PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES); /* Enable all 3 half bridges for 20 kHz sinusoidal drive */
     } else if (g_motor_ctrl.mode == MOTOR_MODE_SIX_STEP_VOLTAGE) {
         /* 6-step trapezoidal commutation */
         uint8_t step_num = (uint8_t)((g_open_loop_angle / TWO_PI) * 6.0f) + 1;
         if (step_num > 6) step_num = 6;
 
-        uint16_t pwm_val = (uint16_t)((active_duty / 100.0f) * (float)IHM07M1_PWM_ARR);
+        uint16_t pwm_val = (uint16_t)((scaled_active_duty / 100.0f) * (float)arr);
 
         switch (step_num) {
             case 1:
-                IHM07M1_EnablePhase(0x03); /* U & V enabled, W floating */
-                IHM07M1_SetPWM(pwm_val, 0, 0);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_V_ENABLE);
+                PowerStage_SetPWM(pwm_val, 0, 0);
                 break;
             case 2:
-                IHM07M1_EnablePhase(0x05); /* U & W enabled, V floating */
-                IHM07M1_SetPWM(pwm_val, 0, 0);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_W_ENABLE);
+                PowerStage_SetPWM(pwm_val, 0, 0);
                 break;
             case 3:
-                IHM07M1_EnablePhase(0x06); /* V & W enabled, U floating */
-                IHM07M1_SetPWM(0, pwm_val, 0);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_V_ENABLE | POWER_STAGE_PHASE_W_ENABLE);
+                PowerStage_SetPWM(0, pwm_val, 0);
                 break;
             case 4:
-                IHM07M1_EnablePhase(0x03); /* U & V enabled, W floating */
-                IHM07M1_SetPWM(0, pwm_val, 0);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_V_ENABLE);
+                PowerStage_SetPWM(0, pwm_val, 0);
                 break;
             case 5:
-                IHM07M1_EnablePhase(0x05); /* U & W enabled, V floating */
-                IHM07M1_SetPWM(0, 0, pwm_val);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_W_ENABLE);
+                PowerStage_SetPWM(0, 0, pwm_val);
                 break;
             case 6:
-                IHM07M1_EnablePhase(0x06); /* V & W enabled, U floating */
-                IHM07M1_SetPWM(0, 0, pwm_val);
+                PowerStage_EnablePhase(POWER_STAGE_PHASE_V_ENABLE | POWER_STAGE_PHASE_W_ENABLE);
+                PowerStage_SetPWM(0, 0, pwm_val);
                 break;
             default:
-                IHM07M1_DisableBridge();
+                PowerStage_DisableBridge();
                 break;
         }
     }
@@ -561,7 +519,9 @@ void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct) {
         s_active_ccr_scale = 0;
         return;
     }
-    s_active_ccr_scale = (uint32_t)((duty_pct / 100.0f) * (float)IHM07M1_PWM_ARR);
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
+    uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
+    s_active_ccr_scale = (uint32_t)((duty_pct / 100.0f) * (float)arr);
     int32_t step = (int32_t)(freq_hz * 214748.3648f);
     if (g_motor_ctrl.direction < 0) {
         step = -step;

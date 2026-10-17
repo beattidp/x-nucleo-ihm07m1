@@ -307,3 +307,117 @@ uint8_t IHM07M1_ReadHallSensors(void) {
     uint8_t h3 = (HAL_GPIO_ReadPin(IHM07M1_HALL3_PORT, IHM07M1_HALL3_PIN) == GPIO_PIN_SET) ? 1 : 0;
     return (uint8_t)((h3 << 2) | (h2 << 1) | h1);
 }
+
+/**
+ * @brief Read an ADC channel synchronously using LL macros without HAL_GetTick dependency
+ */
+static uint16_t IHM07M1_ReadADCChannel(uint32_t channel) {
+    if (!LL_ADC_IsEnabled(hadc1.Instance)) {
+        return 0;
+    }
+
+    LL_ADC_REG_SetSequencerRanks(hadc1.Instance, LL_ADC_REG_RANK_1, channel);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, channel, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+
+    LL_ADC_ClearFlag_EOC(hadc1.Instance);
+    LL_ADC_ClearFlag_EOS(hadc1.Instance);
+
+    LL_ADC_REG_StartConversion(hadc1.Instance);
+
+    uint32_t timeout = 5000;
+    while (!LL_ADC_IsActiveFlag_EOC(hadc1.Instance)) {
+        if (--timeout == 0) {
+            LL_ADC_REG_StopConversion(hadc1.Instance);
+            return 0;
+        }
+    }
+    return (uint16_t)LL_ADC_REG_ReadConversionData12(hadc1.Instance);
+}
+
+float IHM07M1_ReadVBusVoltage(void) {
+    uint16_t raw = IHM07M1_ReadADCChannel(IHM07M1_ADC_VBUS_CH);
+    float adc_v = ((float)raw / 4095.0f) * 3.3f;
+    return adc_v * IHM07M1_VBUS_DIVIDER_RATIO;
+}
+
+float IHM07M1_ReadTemperature(void) {
+    uint16_t raw = IHM07M1_ReadADCChannel(IHM07M1_ADC_TEMP_CH);
+    float temp_v = ((float)raw / 4095.0f) * 3.3f;
+    float temp_c = 25.0f + (1.65f - temp_v) * 35.0f;
+    if (temp_c < 0.0f) temp_c = 0.0f;
+    return temp_c;
+}
+
+float IHM07M1_ReadPotentiometer(void) {
+    uint16_t raw = IHM07M1_ReadADCChannel(IHM07M1_ADC_POT_CH);
+    return ((float)raw / 4095.0f) * 100.0f;
+}
+
+void IHM07M1_ReadRawCurrentSensors(uint16_t* raw_a, uint16_t* raw_b, uint16_t* raw_c) {
+    if (raw_a) *raw_a = IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_A_CH);
+    if (raw_b) *raw_b = IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_B_CH);
+    if (raw_c) *raw_c = IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_C_CH);
+}
+
+void IHM07M1_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uint16_t* offset_c) {
+    IHM07M1_DisableBridge();
+    for (volatile int i = 0; i < 2000; i++);
+
+    uint32_t sum_a = 0;
+    uint32_t sum_b = 0;
+    uint32_t sum_c = 0;
+    const uint16_t num_samples = 64;
+
+    for (uint16_t i = 0; i < num_samples; i++) {
+        sum_a += IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_A_CH);
+        sum_b += IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_B_CH);
+        sum_c += IHM07M1_ReadADCChannel(IHM07M1_ADC_CURR_C_CH);
+        for (volatile int wait = 0; wait < 100; wait++);
+    }
+
+    if (offset_a) *offset_a = (uint16_t)(sum_a / num_samples);
+    if (offset_b) *offset_b = (uint16_t)(sum_b / num_samples);
+    if (offset_c) *offset_c = (uint16_t)(sum_c / num_samples);
+}
+
+static const PowerStageCapabilities_t s_ihm07m1_caps = {
+    .board_type = BOARD_TYPE_IHM07M1_L6230,
+    .board_name = "X-NUCLEO-IHM07M1",
+    .driver_ic = "L6230 DMOS 3-Phase Bridge",
+    .max_voltage_v = 48.0f,
+    .nominal_voltage_v = 24.0f,
+    .max_continuous_current_a = 1.40f,
+    .peak_current_a = 2.80f,
+    .shunt_count = 3,
+    .shunt_resistance_ohm = 0.33f,
+    .opamp_gain = 1.53f,
+    .current_sense_gain = IHM07M1_CURRENT_SENSE_GAIN,
+    .vbus_divider_ratio = IHM07M1_VBUS_DIVIDER_RATIO,
+    .pwm_arr = IHM07M1_PWM_ARR
+};
+
+const PowerStageCapabilities_t* IHM07M1_GetCapabilities(void) {
+    return &s_ihm07m1_caps;
+}
+
+#if (TARGET_POWER_STAGE == BOARD_TYPE_IHM07M1_L6230)
+/* Route unified PowerStage_* calls to IHM07M1 implementation */
+const PowerStageCapabilities_t* PowerStage_GetCapabilities(void) { return IHM07M1_GetCapabilities(); }
+void PowerStage_Init(void) { IHM07M1_Init(); }
+void PowerStage_SetPWM(uint16_t u, uint16_t v, uint16_t w) { IHM07M1_SetPWM(u, v, w); }
+void PowerStage_StartPWM(void) { IHM07M1_StartPWM(); }
+void PowerStage_StopPWM(void) { IHM07M1_StopPWM(); }
+void PowerStage_EnablePhase(uint8_t m) { IHM07M1_EnablePhase(m); }
+void PowerStage_DisableBridge(void) { IHM07M1_DisableBridge(); }
+bool PowerStage_IsFaultActive(void) { return IHM07M1_IsFaultActive(); }
+void PowerStage_ClearFault(void) { IHM07M1_ClearFault(); }
+void PowerStage_SetCurrentTripThreshold(float a) { IHM07M1_SetCurrentReference(a); }
+uint8_t PowerStage_ReadHallSensors(void) { return IHM07M1_ReadHallSensors(); }
+void PowerStage_SetStatusLED(bool s) { IHM07M1_SetRedLED(s); }
+void PowerStage_ToggleStatusLED(void) { IHM07M1_ToggleRedLED(); }
+float PowerStage_ReadVBusVoltage(void) { return IHM07M1_ReadVBusVoltage(); }
+float PowerStage_ReadTemperature(void) { return IHM07M1_ReadTemperature(); }
+float PowerStage_ReadPotentiometer(void) { return IHM07M1_ReadPotentiometer(); }
+void PowerStage_ReadRawCurrentSensors(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_ReadRawCurrentSensors(a, b, c); }
+void PowerStage_CalibrateCurrentOffsets(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_CalibrateCurrentOffsets(a, b, c); }
+#endif

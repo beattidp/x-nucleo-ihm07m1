@@ -1,7 +1,7 @@
 #include "motor_characterization.h"
 #include "motor_control.h"
 #include "motor_profiles.h"
-#include "ihm07m1.h"
+#include "power_stage.h"
 #include <string.h>
 #include <math.h>
 
@@ -41,8 +41,8 @@ void MotorChar_Start(void) {
 
 void MotorChar_Abort(const char* reason) {
     Motor_SetSinusoidalOutput(0.0f, 0.0f);
-    IHM07M1_DisableBridge();
-    IHM07M1_StopPWM();
+    PowerStage_DisableBridge();
+    PowerStage_StopPWM();
     s_char_state = CHAR_STATE_ABORTED;
     if (reason) {
         strncpy(s_results.status_msg, reason, sizeof(s_results.status_msg) - 1);
@@ -91,8 +91,8 @@ void MotorChar_ApplyResults(void) {
  * @brief Helper to measure DC line-to-line pulse
  */
 static void ApplyPulse(uint8_t phase_mask, uint16_t duty_u, uint16_t duty_v, uint16_t duty_w) {
-    IHM07M1_EnablePhase(phase_mask);
-    IHM07M1_SetPWM(duty_u, duty_v, duty_w);
+    PowerStage_EnablePhase(phase_mask);
+    PowerStage_SetPWM(duty_u, duty_v, duty_w);
 }
 
 /**
@@ -107,7 +107,7 @@ void MotorChar_Update1ms(void) {
     s_total_timer_ms++;
 
     /* Fault Check */
-    if (IHM07M1_IsFaultActive()) {
+    if (PowerStage_IsFaultActive()) {
         MotorChar_Abort("Hardware Break / Overcurrent Tripped!");
         return;
     }
@@ -120,8 +120,8 @@ void MotorChar_Update1ms(void) {
          * Step 1: Calibrate Shunt Offsets & Verify Bus Voltage (300 ms)
          * ==================================================================== */
         case CHAR_STATE_CALIBRATING_OFFSETS:
-            IHM07M1_DisableBridge();
-            IHM07M1_StopPWM();
+            PowerStage_DisableBridge();
+            PowerStage_StopPWM();
             strncpy(s_results.status_msg, "Step 1/5: Calibrating Shunt Offsets...", sizeof(s_results.status_msg) - 1);
 
             if (s_step_timer_ms == 50) {
@@ -137,7 +137,7 @@ void MotorChar_Update1ms(void) {
                 s_accum_curr = 0.0f;
                 s_accum_vbus = 0.0f;
                 s_sample_count = 0;
-                IHM07M1_StartPWM();
+                PowerStage_StartPWM();
                 s_char_state = CHAR_STATE_MEASURING_R_UV;
             }
             break;
@@ -148,13 +148,18 @@ void MotorChar_Update1ms(void) {
         case CHAR_STATE_MEASURING_R_UV:
             strncpy(s_results.status_msg, "Step 2/5: Measuring Winding Resistance...", sizeof(s_results.status_msg) - 1);
             {
-                /* 5% duty DC pulse: safe, low power across all motor types */
-                uint16_t test_duty = (uint16_t)(0.05f * (float)IHM07M1_PWM_ARR);
+                /* Target 0.60 V test pulse: safe, low power across all motor types & voltages */
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float test_duty_frac = 0.60f / vbus_now; /* 2.5% at 24V, 5.0% at 12V */
+                if (test_duty_frac < 0.015f) test_duty_frac = 0.015f;
+                if (test_duty_frac > 0.080f) test_duty_frac = 0.080f;
+                uint16_t test_duty = (uint16_t)(test_duty_frac * (float)PowerStage_GetCapabilities()->pwm_arr);
+
                 if (s_step_timer_ms < 50) {
                     ApplyPulse(0x00, 0, 0, 0); /* 50 ms settling */
                 } else if (s_step_timer_ms < 220) {
                     /* U=HIGH (+), V=LOW (-), W=Hi-Z */
-                    ApplyPulse(0x03, test_duty, 0, 0);
+                    ApplyPulse(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_V_ENABLE, test_duty, 0, 0);
                     if (s_step_timer_ms > 100) {
                         s_accum_curr += telem.current_peak_amps;
                         s_accum_vbus += telem.vbus_v;
@@ -163,8 +168,8 @@ void MotorChar_Update1ms(void) {
                 } else {
                     ApplyPulse(0x00, 0, 0, 0);
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.01f;
-                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 12.0f;
-                    float v_applied = 0.05f * avg_vbus;
+                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
+                    float v_applied = test_duty_frac * avg_vbus;
 
                     if (avg_i < 0.05f) avg_i = 0.05f;
                     s_results.r_uv_ohm = v_applied / avg_i;
@@ -183,12 +188,17 @@ void MotorChar_Update1ms(void) {
          * ==================================================================== */
         case CHAR_STATE_MEASURING_R_VW:
             {
-                uint16_t test_duty = (uint16_t)(0.05f * (float)IHM07M1_PWM_ARR);
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float test_duty_frac = 0.60f / vbus_now;
+                if (test_duty_frac < 0.015f) test_duty_frac = 0.015f;
+                if (test_duty_frac > 0.080f) test_duty_frac = 0.080f;
+                uint16_t test_duty = (uint16_t)(test_duty_frac * (float)PowerStage_GetCapabilities()->pwm_arr);
+
                 if (s_step_timer_ms < 50) {
                     ApplyPulse(0x00, 0, 0, 0);
                 } else if (s_step_timer_ms < 220) {
                     /* V=HIGH (+), W=LOW (-), U=Hi-Z */
-                    ApplyPulse(0x06, 0, test_duty, 0);
+                    ApplyPulse(POWER_STAGE_PHASE_V_ENABLE | POWER_STAGE_PHASE_W_ENABLE, 0, test_duty, 0);
                     if (s_step_timer_ms > 100) {
                         s_accum_curr += telem.current_peak_amps;
                         s_accum_vbus += telem.vbus_v;
@@ -197,8 +207,8 @@ void MotorChar_Update1ms(void) {
                 } else {
                     ApplyPulse(0x00, 0, 0, 0);
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.01f;
-                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 12.0f;
-                    float v_applied = 0.05f * avg_vbus;
+                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
+                    float v_applied = test_duty_frac * avg_vbus;
 
                     if (avg_i < 0.05f) avg_i = 0.05f;
                     s_results.r_vw_ohm = v_applied / avg_i;
@@ -217,12 +227,17 @@ void MotorChar_Update1ms(void) {
          * ==================================================================== */
         case CHAR_STATE_MEASURING_R_WU:
             {
-                uint16_t test_duty = (uint16_t)(0.05f * (float)IHM07M1_PWM_ARR);
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float test_duty_frac = 0.60f / vbus_now;
+                if (test_duty_frac < 0.015f) test_duty_frac = 0.015f;
+                if (test_duty_frac > 0.080f) test_duty_frac = 0.080f;
+                uint16_t test_duty = (uint16_t)(test_duty_frac * (float)PowerStage_GetCapabilities()->pwm_arr);
+
                 if (s_step_timer_ms < 50) {
                     ApplyPulse(0x00, 0, 0, 0);
                 } else if (s_step_timer_ms < 220) {
                     /* W=HIGH (+), U=LOW (-), V=Hi-Z */
-                    ApplyPulse(0x05, 0, 0, test_duty);
+                    ApplyPulse(POWER_STAGE_PHASE_U_ENABLE | POWER_STAGE_PHASE_W_ENABLE, 0, 0, test_duty);
                     if (s_step_timer_ms > 100) {
                         s_accum_curr += telem.current_peak_amps;
                         s_accum_vbus += telem.vbus_v;
@@ -231,8 +246,8 @@ void MotorChar_Update1ms(void) {
                 } else {
                     ApplyPulse(0x00, 0, 0, 0);
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.01f;
-                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 12.0f;
-                    float v_applied = 0.05f * avg_vbus;
+                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
+                    float v_applied = test_duty_frac * avg_vbus;
 
                     if (avg_i < 0.05f) avg_i = 0.05f;
                     s_results.r_wu_ohm = v_applied / avg_i;
@@ -265,12 +280,16 @@ void MotorChar_Update1ms(void) {
         case CHAR_STATE_ALIGNMENT_STICTION:
             strncpy(s_results.status_msg, "Step 3/5: Rotor Alignment & Stiction Test...", sizeof(s_results.status_msg) - 1);
             {
-                /* Ramp alignment duty from 12% to 22% at angle 0 */
+                /* Voltage-normalized alignment ramp: 1.20 V to 2.40 V target */
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
                 float progress = (float)s_step_timer_ms / 1000.0f;
-                float align_duty = 12.0f + progress * 10.0f;
+                float target_v = 1.20f + (progress * 1.20f);
+                float align_duty = (target_v / vbus_now) * 100.0f;
+                if (align_duty < 4.0f) align_duty = 4.0f;
+                if (align_duty > 30.0f) align_duty = 30.0f;
 
                 Motor_SetSinusoidalOutput(0.0f, align_duty);
-                IHM07M1_EnablePhase(0x07);
+                PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
                 if (s_step_timer_ms > 600) {
                     s_accum_curr += telem.current_peak_amps;
@@ -279,7 +298,7 @@ void MotorChar_Update1ms(void) {
 
                 if (s_step_timer_ms >= 1000) {
                     s_results.stiction_current_amps = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.35f;
-                    s_results.min_align_duty_pct = 20.0f;
+                    s_results.min_align_duty_pct = align_duty;
 
                     s_step_timer_ms = 0;
                     s_accum_curr = 0.0f;
@@ -302,9 +321,14 @@ void MotorChar_Update1ms(void) {
                     freq = 2.0f + ((float)s_step_timer_ms / 500.0f) * 48.0f;
                 }
 
-                float duty_50 = 22.0f;
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float target_v_50 = 2.64f; /* 2.64 V stator target at 50 Hz */
+                float duty_50 = (target_v_50 / vbus_now) * 100.0f;
+                if (duty_50 < 6.0f) duty_50 = 6.0f;
+                if (duty_50 > 30.0f) duty_50 = 30.0f;
+
                 Motor_SetSinusoidalOutput(freq, duty_50);
-                IHM07M1_EnablePhase(0x07);
+                PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
                 if (s_step_timer_ms > 1200) {
                     s_accum_curr += telem.current_peak_amps;
@@ -314,11 +338,11 @@ void MotorChar_Update1ms(void) {
 
                 if (s_step_timer_ms >= 2500) {
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.35f;
-                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 12.0f;
+                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
                     s_i50 = avg_i;
                     s_v50 = (duty_50 / 100.0f) * avg_vbus;
                     const MotorControl_t* ctrl = Motor_GetControl();
-                    uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 7;
+                    uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 14;
                     s_rpm50 = (50.0f * 60.0f) / (float)pp;
 
                     s_step_timer_ms = 0;
@@ -341,9 +365,14 @@ void MotorChar_Update1ms(void) {
                     freq = 50.0f + ((float)s_step_timer_ms / 500.0f) * 50.0f;
                 }
 
-                float duty_100 = 28.0f;
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float target_v_100 = 3.36f; /* 3.36 V stator target at 100 Hz */
+                float duty_100 = (target_v_100 / vbus_now) * 100.0f;
+                if (duty_100 < 8.0f) duty_100 = 8.0f;
+                if (duty_100 > 38.0f) duty_100 = 38.0f;
+
                 Motor_SetSinusoidalOutput(freq, duty_100);
-                IHM07M1_EnablePhase(0x07);
+                PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
                 if (s_step_timer_ms > 1200) {
                     s_accum_curr += telem.current_peak_amps;
@@ -353,11 +382,11 @@ void MotorChar_Update1ms(void) {
 
                 if (s_step_timer_ms >= 2500) {
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.40f;
-                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 12.0f;
+                    float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
                     s_i100 = avg_i;
                     s_v100 = (duty_100 / 100.0f) * avg_vbus;
                     const MotorControl_t* ctrl = Motor_GetControl();
-                    uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 7;
+                    uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 14;
                     s_rpm100 = (100.0f * 60.0f) / (float)pp;
 
                     s_step_timer_ms = 0;
@@ -372,8 +401,8 @@ void MotorChar_Update1ms(void) {
         case CHAR_STATE_CALCULATING:
             /* Safe bridge shutdown */
             Motor_SetSinusoidalOutput(0.0f, 0.0f);
-            IHM07M1_DisableBridge();
-            IHM07M1_StopPWM();
+            PowerStage_DisableBridge();
+            PowerStage_StopPWM();
 
             {
                 /* Estimate Back-EMF opposing voltages */
@@ -387,19 +416,20 @@ void MotorChar_Update1ms(void) {
                     /* Fallback to single-point estimate */
                     kv = s_rpm100 / e100;
                 }
-                if (kv < 150.0f) kv = 150.0f;
+                if (kv < 120.0f) kv = 120.0f;
                 if (kv > 3500.0f) kv = 3500.0f;
 
                 s_results.kv_rating = kv;
                 s_results.ke_v_krpm = 1000.0f / kv;
 
-                /* Recommend Base Duty and V/F Slope */
-                float rec_base = 18.0f + (s_results.r_phase_ohm * 0.7f);
-                if (rec_base < 16.0f) rec_base = 16.0f;
-                if (rec_base > 26.0f) rec_base = 26.0f;
+                /* Recommend Base Duty and V/F Slope scaled to active bus voltage */
+                float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
+                float rec_base = (2.40f / vbus_now) * 100.0f;
+                if (rec_base < 6.0f) rec_base = 6.0f;
+                if (rec_base > 22.0f) rec_base = 22.0f;
 
-                float rec_slope = 16.0f + (1500.0f / kv) * 4.0f;
-                if (rec_slope < 15.0f) rec_slope = 15.0f;
+                float rec_slope = (1000.0f / kv) * (100.0f / vbus_now) * 1.2f;
+                if (rec_slope < 10.0f) rec_slope = 10.0f;
                 if (rec_slope > 28.0f) rec_slope = 28.0f;
 
                 s_results.recommended_base_duty = rec_base;

@@ -101,6 +101,8 @@ extern ADC_HandleTypeDef hadc1;
 /* Current: Shunt = 0.33 Ohm, TSV994 Op-Amp Gain = 1.53 -> 0.5049 V/A */
 #define IHM07M1_CURRENT_SENSE_GAIN  0.5049f
 
+#include "power_stage.h"
+
 /* Driver API Functions */
 void IHM07M1_Init(void);
 void IHM07M1_SetCurrentReference(float max_amps);
@@ -114,6 +116,14 @@ void IHM07M1_ClearFault(void);
 void IHM07M1_SetRedLED(bool state);
 void IHM07M1_ToggleRedLED(void);
 uint8_t IHM07M1_ReadHallSensors(void);
+const PowerStageCapabilities_t* IHM07M1_GetCapabilities(void);
+
+/* Analog Telemetry & Offset Calibration */
+float IHM07M1_ReadVBusVoltage(void);
+float IHM07M1_ReadTemperature(void);
+float IHM07M1_ReadPotentiometer(void);
+void  IHM07M1_ReadRawCurrentSensors(uint16_t* raw_a, uint16_t* raw_b, uint16_t* raw_c);
+void  IHM07M1_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uint16_t* offset_c);
 
 #ifdef __cplusplus
 }

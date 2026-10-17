@@ -1,6 +1,6 @@
 #include "main.h"
 #include "console.h"
-#include "ihm07m1.h"
+#include "power_stage.h"
 #include "motor_control.h"
 #include "motor_profiles.h"
 #include "motor_characterization.h"
@@ -20,17 +20,23 @@ int main(void) {
     /* 4. Initialize LPUART1 serial console on PA2 (TX) / PA3 (RX) */
     console_init();
 
-    /* 5. Initialize X-NUCLEO-IHM07M1 driver and motor control engine */
+    /* 5. Initialize Power Stage driver and motor control engine */
     Motor_Init();
 
-    /* Initial banner */
+    /* Initial banner displaying detected/active power stage capabilities */
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
     printf("\r\n");
     printf("================================================================================\r\n");
-    printf("  STM32G474RE + X-NUCLEO-IHM07M1 -- 3-PHASE BLDC MOTOR EVALUATION SYSTEM        \r\n");
+    printf("  STM32G474RE + %s -- 3-PHASE BLDC MOTOR EVALUATION SYSTEM        \r\n",
+           caps ? caps->board_name : "POWER STAGE");
     printf("  Console : LPUART1 (PA2-TX, PA3-RX) @ 115200 baud                              \r\n");
-    printf("  Driver  : L6230 Monolithic DMOS 3-Phase Bridge                                \r\n");
-    printf("  PWM     : TIM1 CH1..3 (PA8, PA9, PA10) @ 20 kHz Center-Aligned                \r\n");
-    printf("  Safety  : TIM1_BKIN (PA6) + Current Ref (PB4 @ 1.2A Limit)                    \r\n");
+    printf("  Driver  : %-60s\r\n", caps ? caps->driver_ic : "Unknown");
+    printf("  PWM     : TIM1 CH1..3 @ 20 kHz Center-Aligned (ARR = %u)                       \r\n",
+           caps ? caps->pwm_arr : 4249);
+    printf("  Ratings : Max %.1f V / %.1f A Continuous (%.1f A Hardware Trip Reference)      \r\n",
+           caps ? caps->max_voltage_v : 48.0f,
+           caps ? caps->max_continuous_current_a : 1.4f,
+           caps ? caps->peak_current_a : 2.8f);
     printf("================================================================================\r\n\r\n");
 
     printf("Starting non-scrolling dashboard in 2 seconds...\r\n");
