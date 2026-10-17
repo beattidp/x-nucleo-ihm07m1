@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "motor_profiles.h"
 
 typedef enum {
     MOTOR_MODE_IDLE = 0,
@@ -19,6 +20,7 @@ typedef enum {
     MOTOR_STATE_STARTING,
     MOTOR_STATE_RUNNING,
     MOTOR_STATE_BRAKING,            /* Active controlled deceleration */
+    MOTOR_STATE_CHARACTERIZING,     /* Automated motor characterization running */
     MOTOR_STATE_FAULT
 } MotorState_t;
 
@@ -35,6 +37,9 @@ typedef struct MotorTelemetry_s {
     uint32_t sample_count;          /* Telemetry sample count */
 } MotorTelemetry_t;
 
+#define MOTOR_POT_MIN_RPM           300.0f
+#define MOTOR_POT_MAX_RPM           3000.0f
+
 typedef struct MotorControl_s {
     MotorMode_t mode;
     MotorState_t state;
@@ -44,21 +49,42 @@ typedef struct MotorControl_s {
     float duty_pct;                 /* Commanded duty cycle (0.0 to 100.0%) */
     float electrical_freq_hz;       /* Commutation electrical frequency in Hz */
     uint8_t pole_pairs;             /* Motor pole pairs (default: 7) */
-    float current_limit_amps;       /* Hardware trip threshold (default: 1.2 A) */
+    float current_limit_amps;       /* Hardware trip threshold (default: 2.2 A) */
+    float torque_limit_amps;        /* Software continuous current/torque ceiling (0.3 to 1.4 A) */
+    float active_duty_pct;          /* Instantaneous regulated duty cycle (after V/F & foldback) */
     uint32_t run_time_ms;           /* Elapsed motor run time in ms */
+    uint32_t startup_timer_ms;      /* Elapsed startup timer in ms (alignment & ramp) */
+    float current_freq_hz;          /* Instantaneous electrical frequency in Hz */
+    bool pot_control_enabled;       /* Whether potentiometer actively controls target speed */
+    float vf_slope_pct;             /* Back-EMF compensation slope (% duty across speed range) */
+    float accel_slew_rpm_s;         /* Acceleration slew rate (RPM / second) */
+    float min_rpm;                  /* Minimum RPM */
+    float max_rpm;                  /* Maximum RPM */
 } MotorControl_t;
 
 /* Core Motor Control API */
 void Motor_Init(void);
+void Motor_ApplyProfile(const MotorProfile_t* prof);
+void Motor_StartCharacterization(void);
+void Motor_CalibrateCurrentOffsets(void);
 void Motor_Start(void);
 void Motor_Stop(void);
 void Motor_Brake(void);
 void Motor_SetDuty(float duty_pct);
+void Motor_IncDuty(void);
+void Motor_DecDuty(void);
+void Motor_SetTorqueLimit(float amps);
+void Motor_IncTorqueLimit(void);
+void Motor_DecTorqueLimit(void);
 void Motor_SetSpeed(float rpm);
 void Motor_SetDirection(int8_t dir);
 void Motor_SetMode(MotorMode_t mode);
+void Motor_TogglePotControl(void);
+void Motor_SetPotControl(bool enable);
 void Motor_ResetFault(void);
+void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct);
 void Motor_Update1ms(void);
+void Motor_PWM_UpdateISR(void);
 void Motor_GetTelemetry(MotorTelemetry_t* telem);
 const MotorControl_t* Motor_GetControl(void);
 

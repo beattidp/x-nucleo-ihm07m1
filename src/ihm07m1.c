@@ -1,4 +1,6 @@
 #include "ihm07m1.h"
+#include "motor_control.h"
+#include "stm32g4xx_ll_adc.h"
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim16;
@@ -39,9 +41,9 @@ void IHM07M1_Init(void) {
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(IHM07M1_RED_LED_PORT, &GPIO_InitStruct);
 
-    /* 3. Configure L6230 DIAG/BKIN Fault Pin (PA6) */
+    /* 3. Configure L6230 DIAG/BKIN Fault Pin (PA6) - Open Drain with Pull-up */
     GPIO_InitStruct.Pin = IHM07M1_DIAG_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     GPIO_InitStruct.Alternate = IHM07M1_DIAG_AF;
@@ -78,7 +80,7 @@ void IHM07M1_Init(void) {
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2);
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3);
 
-    /* Configure Hardware Break Input (BKIN) from L6230 DIAG */
+    /* Configure Hardware Break Input (BKIN) from L6230 DIAG with 1.5 us digital filter */
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
     sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
@@ -86,9 +88,13 @@ void IHM07M1_Init(void) {
     sBreakDeadTimeConfig.DeadTime = 0;
     sBreakDeadTimeConfig.BreakState = TIM_BREAK_ENABLE;
     sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_LOW;
-    sBreakDeadTimeConfig.BreakFilter = 2;
+    sBreakDeadTimeConfig.BreakFilter = 15; /* Maximum noise filter: ~1.5 us */
     sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
     HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig);
+
+    /* Configure TIM1 Update Interrupt (20 kHz PWM Commutation Update) */
+    HAL_NVIC_SetPriority(TIM1_UP_TIM16_IRQn, 2, 0);
+    HAL_NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 
     /* 6. Configure Current Reference Generation (TIM16_CH1 on PB4) */
     GPIO_InitStruct.Pin = IHM07M1_REF_PIN;
@@ -112,8 +118,8 @@ void IHM07M1_Init(void) {
     HAL_TIM_PWM_ConfigChannel(&htim16, &sConfigOC, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim16, TIM_CHANNEL_1);
 
-    /* Set default safe current limit: 1.2 Amps */
-    IHM07M1_SetCurrentReference(1.2f);
+    /* Set default safe hardware trip current limit: 2.2 Amps (below L6230 2.8A peak limit) */
+    IHM07M1_SetCurrentReference(2.2f);
 
     /* 7. Configure Hall Sensor Inputs (PA15, PB3, PB10) */
     GPIO_InitStruct.Pin = IHM07M1_HALL1_PIN;
@@ -159,19 +165,26 @@ void IHM07M1_Init(void) {
     HAL_ADC_Init(&hadc1);
 
     HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+
+    /* Enable ADC1 peripheral and wait until ADRDY becomes active */
+    LL_ADC_ClearFlag_ADRDY(hadc1.Instance);
+    LL_ADC_Enable(hadc1.Instance);
+    while (!LL_ADC_IsActiveFlag_ADRDY(hadc1.Instance)) {
+        LL_ADC_Enable(hadc1.Instance);
+    }
 }
 
 /**
  * @brief Set L6230 current reference threshold in Amperes (via TIM16_CH1 PWM)
+ *        Calibrated to match ST X-CUBE-SPN7 hardware reference:
+ *        2.2 A peak = 488 counts (48.8% duty, ~1.61V on PB4).
  */
 void IHM07M1_SetCurrentReference(float max_amps) {
-    if (max_amps < 0.2f) max_amps = 0.2f;
-    if (max_amps > 2.5f) max_amps = 2.5f;
+    if (max_amps < 0.3f) max_amps = 0.3f;
+    if (max_amps > 2.6f) max_amps = 2.6f;
 
-    /* V_ref = max_amps * 0.33 Ohm */
-    /* Duty = V_ref / 3.3V = max_amps * 0.10 */
-    /* Pulse = Duty * ARR (ARR = 999) = max_amps * 99.9 */
-    uint32_t pulse = (uint32_t)(max_amps * 99.9f);
+    /* pulse = max_amps * (2000 / 4096 / 2.2) * ARR = max_amps * 221.7f */
+    uint32_t pulse = (uint32_t)(max_amps * 221.7f);
     if (pulse > IHM07M1_REF_ARR) pulse = IHM07M1_REF_ARR;
 
     __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, pulse);
@@ -212,16 +225,19 @@ void IHM07M1_SetPWM(uint16_t duty_u, uint16_t duty_v, uint16_t duty_w) {
  * @brief Start TIM1 PWM generation
  */
 void IHM07M1_StartPWM(void) {
+    __HAL_TIM_CLEAR_FLAG(&htim1, TIM_FLAG_UPDATE);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
     __HAL_TIM_MOE_ENABLE(&htim1);
+    __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_UPDATE);
 }
 
 /**
  * @brief Stop TIM1 PWM generation
  */
 void IHM07M1_StopPWM(void) {
+    __HAL_TIM_DISABLE_IT(&htim1, TIM_IT_UPDATE);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
@@ -229,15 +245,35 @@ void IHM07M1_StopPWM(void) {
 }
 
 /**
+ * @brief TIM1 Update Interrupt Handler (20 kHz PWM cycle update)
+ */
+void TIM1_UP_TIM16_IRQHandler(void) {
+    if (__HAL_TIM_GET_FLAG(&htim1, TIM_FLAG_UPDATE) != RESET) {
+        __HAL_TIM_CLEAR_IT(&htim1, TIM_IT_UPDATE);
+        Motor_PWM_UpdateISR();
+    }
+    if (__HAL_TIM_GET_FLAG(&htim16, TIM_FLAG_UPDATE) != RESET) {
+        __HAL_TIM_CLEAR_IT(&htim16, TIM_IT_UPDATE);
+    }
+    /* Read back SR to ensure write buffer drain before ISR exit */
+    (void)htim1.Instance->SR;
+}
+
+/**
  * @brief Check if L6230 DIAG pin indicates overcurrent or thermal shutdown
  */
 bool IHM07M1_IsFaultActive(void) {
-    /* Pin is open-drain active LOW */
-    if (HAL_GPIO_ReadPin(IHM07M1_DIAG_PORT, IHM07M1_DIAG_PIN) == GPIO_PIN_RESET) {
+    /* Check hardware break latched in TIM1 (filtered by BreakFilter) */
+    if (__HAL_TIM_GET_FLAG(&htim1, TIM_FLAG_BREAK) != RESET ||
+        __HAL_TIM_GET_FLAG(&htim1, TIM_FLAG_BREAK2) != RESET) {
         return true;
     }
-    if (__HAL_TIM_GET_FLAG(&htim1, TIM_FLAG_BREAK) != RESET) {
-        return true;
+    /* Pin is open-drain active LOW. Debounce against transient noise spikes */
+    if (HAL_GPIO_ReadPin(IHM07M1_DIAG_PORT, IHM07M1_DIAG_PIN) == GPIO_PIN_RESET) {
+        for (volatile int i = 0; i < 40; i++);
+        if (HAL_GPIO_ReadPin(IHM07M1_DIAG_PORT, IHM07M1_DIAG_PIN) == GPIO_PIN_RESET) {
+            return true;
+        }
     }
     return false;
 }
@@ -247,6 +283,7 @@ bool IHM07M1_IsFaultActive(void) {
  */
 void IHM07M1_ClearFault(void) {
     __HAL_TIM_CLEAR_FLAG(&htim1, TIM_FLAG_BREAK);
+    __HAL_TIM_CLEAR_FLAG(&htim1, TIM_FLAG_BREAK2);
     __HAL_TIM_MOE_ENABLE(&htim1);
 }
 

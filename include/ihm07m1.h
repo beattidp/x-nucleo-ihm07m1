@@ -7,6 +7,11 @@ extern "C" {
 
 #include "main.h"
 
+extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim16;
+extern TIM_HandleTypeDef htim2;
+extern ADC_HandleTypeDef hadc1;
+
 /* Timer Configuration */
 #define IHM07M1_PWM_FREQ_HZ         20000U
 #define IHM07M1_TIM1_CLK_HZ         170000000U
