@@ -2,6 +2,8 @@
 #include "console.h"
 #include "ihm07m1.h"
 #include "motor_control.h"
+#include "motor_profiles.h"
+#include "motor_characterization.h"
 
 static void MX_GPIO_Init(void);
 
@@ -47,51 +49,98 @@ int main(void) {
     while (1) {
         uint32_t now = HAL_GetTick();
 
-        /* 1 ms Motor Control Task */
-        Motor_Update1ms();
-
         /* Handle Console Interactive Keystrokes */
         int ch = console_getch();
         if (ch != -1) {
             const MotorControl_t* ctrl = Motor_GetControl();
-            switch (ch) {
-                case ' ':
-                    if (ctrl->state == MOTOR_STATE_STOPPED) {
-                        Motor_Start();
-                    } else {
+
+            /* If in characterization mode, handle characterization navigation keys */
+            if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {
+                if (ch == 27 || ch == 'x' || ch == 'X') { /* ESC or X */
+                    MotorChar_Abort("Characterization aborted by user.");
+                    Motor_Stop();
+                } else if (ch == '\r' || ch == '\n') {
+                    if (MotorChar_GetState() == CHAR_STATE_COMPLETE) {
+                        MotorChar_ApplyResults();
+                        HAL_Delay(500);
                         Motor_Stop();
                     }
-                    break;
-                case '+':
-                case '=':
-                    Motor_SetDuty(ctrl->duty_pct + 2.0f);
-                    break;
-                case '-':
-                case '_':
-                    Motor_SetDuty(ctrl->duty_pct - 2.0f);
-                    break;
-                case 'd':
-                case 'D':
-                    Motor_SetDirection(ctrl->direction > 0 ? -1 : 1);
-                    break;
-                case 'm':
-                case 'M':
-                    if (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) {
-                        Motor_SetMode(MOTOR_MODE_SIX_STEP_VOLTAGE);
-                    } else {
-                        Motor_SetMode(MOTOR_MODE_OPEN_LOOP_CHAR);
-                    }
-                    break;
-                case 'b':
-                case 'B':
-                    Motor_Brake();
-                    break;
-                case 'r':
-                case 'R':
-                    Motor_ResetFault();
-                    break;
-                default:
-                    break;
+                }
+            } else {
+                switch (ch) {
+                    case ' ':
+                        if (ctrl->state == MOTOR_STATE_STOPPED) {
+                            Motor_Start();
+                        } else {
+                            Motor_Stop();
+                        }
+                        break;
+                    case '+':
+                    case '=':
+                        Motor_IncTorqueLimit();
+                        break;
+                    case '-':
+                    case '_':
+                        Motor_DecTorqueLimit();
+                        break;
+                    case ']':
+                    case '}':
+                        Motor_IncDuty();
+                        break;
+                    case '[':
+                    case '{':
+                        Motor_DecDuty();
+                        break;
+                    case 'd':
+                    case 'D':
+                        Motor_SetDirection(ctrl->direction > 0 ? -1 : 1);
+                        break;
+                    case 'm':
+                    case 'M':
+                        if (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) {
+                            Motor_SetMode(MOTOR_MODE_SIX_STEP_VOLTAGE);
+                        } else {
+                            Motor_SetMode(MOTOR_MODE_OPEN_LOOP_CHAR);
+                        }
+                        break;
+                    case 'p':
+                    case 'P':
+                        Motor_TogglePotControl();
+                        break;
+                    case 'o':
+                    case 'O':
+                        if (ctrl->state == MOTOR_STATE_STOPPED) {
+                            MotorProfiles_Next();
+                        }
+                        break;
+                    case 'c':
+                    case 'C':
+                        Motor_StartCharacterization();
+                        break;
+                    case 'b':
+                    case 'B':
+                        Motor_Brake();
+                        break;
+                    case 'r':
+                    case 'R':
+                        Motor_ResetFault();
+                        break;
+                    case '\r':
+                    case '\n':
+                        if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {
+                            MotorChar_ApplyResults();
+                            Motor_Stop();
+                        }
+                        break;
+                    case 0x1B: /* ESC */
+                        if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {
+                            MotorChar_Abort("Cancelled by user.");
+                        }
+                        Motor_Stop();
+                        break;
+                    default:
+                        break;
+                }
             }
         }
 
@@ -116,22 +165,26 @@ int main(void) {
             hb_idx = (hb_idx + 1) % 4;
         }
 
-        /* Refresh Dashboard at 10 Hz (100 ms) */
-        if (now - last_dash_tick >= 100) {
+        /* Refresh Dashboard at 4 Hz (250 ms) */
+        if (now - last_dash_tick >= 250) {
             last_dash_tick = now;
             MotorTelemetry_t telem;
             Motor_GetTelemetry(&telem);
             const MotorControl_t* ctrl = Motor_GetControl();
 
 #if CONSOLE_NON_SCROLLING
-            Console_RenderDashboard(&telem, ctrl, hb_spin[hb_idx]);
+            if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {
+                Console_RenderCharDashboard(&telem, ctrl, hb_spin[hb_idx]);
+            } else {
+                Console_RenderDashboard(&telem, ctrl, hb_spin[hb_idx]);
+            }
 #else
             printf("Uptime: %lu ms | VBUS: %.2f V | Duty: %.1f %% | Current: %.2f A\r\n",
-                   now, telem.vbus_v, ctrl->duty_pct, telem.current_peak_amps);
+                   (unsigned long)now, telem.vbus_v, ctrl->duty_pct, telem.current_peak_amps);
 #endif
         }
 
-        HAL_Delay(1);
+        HAL_Delay(5);
     }
 }
 
@@ -208,4 +261,6 @@ void Error_Handler(void) {
  */
 void SysTick_Handler(void) {
     HAL_IncTick();
+    /* Deterministic 1 kHz motor control task */
+    Motor_Update1ms();
 }
