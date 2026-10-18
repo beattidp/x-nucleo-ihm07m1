@@ -6,8 +6,9 @@ Manages GNU screen sessions connected to the ST-LINK V3E Virtual COM Port (/dev/
 Supports:
 1. Instant rendered buffer snapshot capture (hardcopy).
 2. Live raw ANSI escape sequence stream logging to file.
-3. Automated timed captures with optional initial screen redraw.
-4. Screen session status inspection.
+3. Programmatic hotkey & character injection into the console tty.
+4. Automated timed captures with optional initial screen redraw.
+5. Screen session status inspection.
 """
 
 import argparse
@@ -16,6 +17,41 @@ import re
 import subprocess
 import sys
 import time
+
+KEY_MAP = {
+    "space": " ",
+    "run": " ",
+    "stop": " ",
+    "toggle": " ",
+    "pot": "p",
+    "p": "p",
+    "dir": "d",
+    "direction": "d",
+    "d": "d",
+    "profile": "o",
+    "o": "o",
+    "mode": "m",
+    "m": "m",
+    "char": "c",
+    "characterize": "c",
+    "c": "c",
+    "brake": "b",
+    "b": "b",
+    "reset": "r",
+    "r": "r",
+    "redraw": "l",
+    "l": "l",
+    "+": "+",
+    "-": "-",
+    "torque_up": "+",
+    "torque_down": "-",
+    "]": "]",
+    "[": "[",
+    "duty_up": "]",
+    "duty_down": "[",
+    "enter": "\r",
+    "esc": "\x1b",
+}
 
 
 def find_screen_sessions():
@@ -26,7 +62,6 @@ def find_screen_sessions():
         output = e.output
 
     sessions = []
-    # Lines like: \t44291.pts-1.tantalum\t(10/17/2026 10:03:13 AM)\t(Attached)
     for line in output.splitlines():
         match = re.search(r"\s*(\d+\.[^\s]+)\s+\((.*?)\)\s+\((Attached|Detached)\)", line)
         if match:
@@ -52,11 +87,17 @@ def get_target_session(session_arg=None):
         print(f"Error: Specified session '{session_arg}' not found.", file=sys.stderr)
         sys.exit(1)
 
-    # Return the first attached or available session
     for s in sessions:
         if s["state"] == "Attached":
             return s["id"]
     return sessions[0]["id"]
+
+
+def send_keystroke(session_id, key_str):
+    """Injects hotkeys or strings into the running screen session's input queue."""
+    payload = KEY_MAP.get(key_str.lower(), key_str)
+    subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "stuff", payload], check=True)
+    print(f"Sent key '{key_str}' (payload: {repr(payload)}) to session '{session_id}'.")
 
 
 def capture_snapshot(session_id, output_path=None, include_scrollback=False):
@@ -92,27 +133,19 @@ def capture_snapshot(session_id, output_path=None, include_scrollback=False):
             pass
 
 
-def trigger_redraw(session_id):
-    """Sends 'l' to the screen session to trigger a complete dashboard redraw."""
-    subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "stuff", "l"], check=True)
-
-
 def start_logging(session_id, log_file, redraw=False):
     """Enables live stream logging to the specified file."""
     abs_path = os.path.abspath(log_file)
     os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
-    # Ensure log is stopped first to flush any existing state
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "log", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Set logfile
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "logfile", abs_path], check=True)
-    # Enable logging
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "log", "on"], check=True)
     print(f"Live stream logging STARTED on session '{session_id}' -> {abs_path}")
 
     if redraw:
         time.sleep(0.05)
-        trigger_redraw(session_id)
+        send_keystroke(session_id, "l")
         print("Triggered initial dashboard full redraw.")
 
 
@@ -129,6 +162,8 @@ def main():
     parser.add_argument("--snapshot", nargs="?", const="print", help="Take screen buffer snapshot (save to file, or stdout if no file)")
     parser.add_argument("--scrollback", "-b", action="store_true", help="Include full scrollback history in snapshot")
     parser.add_argument("--redraw", action="store_true", help="Trigger a full screen redraw ('l')")
+    parser.add_argument("--key", "-k", help="Inject named hotkey (space, pot, dir, profile, mode, char, brake, reset, redraw, +, -, enter, esc)")
+    parser.add_argument("--send", help="Inject arbitrary characters/strings into console tty")
     parser.add_argument("--start-log", metavar="FILE", help="Start raw ANSI stream logging to FILE")
     parser.add_argument("--stop-log", action="store_true", help="Stop stream logging")
     parser.add_argument("--capture-duration", type=float, metavar="SECONDS", help="Capture stream logging for N seconds, then stop")
@@ -147,8 +182,16 @@ def main():
 
     session_id = get_target_session(args.session)
 
+    if args.key:
+        send_keystroke(session_id, args.key)
+        return
+
+    if args.send:
+        send_keystroke(session_id, args.send)
+        return
+
     if args.redraw and not args.capture_duration and not args.start_log:
-        trigger_redraw(session_id)
+        send_keystroke(session_id, "l")
         print(f"Full screen redraw triggered on session '{session_id}'.")
         return
 

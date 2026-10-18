@@ -80,6 +80,18 @@ python3 tools/capture_console.py --snapshot [output.txt]
 # Trigger full screen repaint ('l')
 python3 tools/capture_console.py --redraw
 
+# Programmatically inject hotkeys into the console tty:
+python3 tools/capture_console.py --key space      # [SPACE] Start / Stop motor
+python3 tools/capture_console.py --key pot        # [P] Toggle potentiometer control
+python3 tools/capture_console.py --key dir        # [D] Toggle CW/CCW direction
+python3 tools/capture_console.py --key profile    # [O] Next motor profile
+python3 tools/capture_console.py --key torque_up  # [+] Increment torque limit
+python3 tools/capture_console.py --key torque_down# [-] Decrement torque limit
+python3 tools/capture_console.py --key char       # [C] Start characterization
+python3 tools/capture_console.py --key brake      # [B] Active brake
+python3 tools/capture_console.py --key reset      # [R] Reset fault
+python3 tools/capture_console.py --send "any text"# Send arbitrary string/keystroke
+
 # Start background stream logging to file
 python3 tools/capture_console.py --start-log telemetry.log
 

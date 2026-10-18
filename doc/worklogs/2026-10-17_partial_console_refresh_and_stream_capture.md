@@ -39,6 +39,8 @@ The user raised key operational and architectural questions regarding the evalua
 - Developed a Python CLI tool interfacing with active GNU screen sessions:
   - `--status`: Inspects active sessions (`44291.pts-1.tantalum`).
   - `--snapshot [file]`: Captures clean visible terminal buffers via screen hardcopy without scrollback noise.
+  - `--key <name>`: Programmatically injects hotkeys into the console tty (`space`, `pot`, `dir`, `profile`, `char`, `brake`, `reset`, `redraw`, `torque_up`, `torque_down`, `enter`, `esc`).
+  - `--send "<string>"`: Injects arbitrary keystroke strings into the console tty.
   - `--start-log` / `--stop-log`: Controls live streaming of raw ANSI bytes to file.
   - `--redraw`: Commands screen to send `'l'` to the target session for an immediate full frame refresh.
   - `--capture-duration <sec>`: Executes automated timed log captures.
