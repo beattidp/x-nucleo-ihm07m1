@@ -59,6 +59,12 @@ The firmware maintains a shadow cache (`MainShadow_t` and `CharShadow_t`) storin
 
 The **Sample #** anchor (`Row 5, Col 44`) is emitted unconditionally on every 250 ms cycle, providing an exact heartbeat and frame boundary for external log parsers.
 
+### 2.3 Immediate Unbuffered stdio Transmission
+
+Because partial refresh updates purposefully omit newline characters (`\n`) to prevent vertical terminal scrolling, standard library `libc` (`newlib-nano`) would default to holding output until a 1,024-byte block accumulated (resulting in a ~3.0 second perceived freeze at ~340 B/s partial throughput). To guarantee real-time, zero-latency transmission:
+1. `setvbuf(stdout, NULL, _IONBF, 0)` and `setvbuf(stderr, NULL, _IONBF, 0)` are invoked in `console_init()`.
+2. An explicit `fflush(stdout)` is executed at the completion of every dashboard rendering pass.
+
 ---
 
 ## 3. Tooling Specifications

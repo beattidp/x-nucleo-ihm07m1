@@ -70,6 +70,10 @@ void console_init(void) {
     /* Enable RX Interrupt */
     __HAL_UART_ENABLE_IT(&hlpuart1, UART_IT_RXNE);
 
+    /* Disable libc stdio buffering so partial updates flush immediately */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+
     s_console_ready = true;
 }
 
@@ -468,8 +472,9 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
         s_main_shadow.current_limit_amps = ctrl->current_limit_amps;
     }
 
-    /* Cleanly park cursor below dashboard */
+    /* Cleanly park cursor below dashboard and flush immediately */
     printf("\033[29;1H");
+    fflush(stdout);
     s_main_shadow.valid = true;
 }
 
@@ -567,7 +572,8 @@ void Console_RenderCharDashboard(const MotorTelemetry_t* telem, const MotorContr
         s_char_shadow.state = state;
     }
 
-    /* Park cursor cleanly below char dashboard */
+    /* Park cursor cleanly below char dashboard and flush immediately */
     printf("\033[26;1H");
+    fflush(stdout);
     s_char_shadow.valid = true;
 }
