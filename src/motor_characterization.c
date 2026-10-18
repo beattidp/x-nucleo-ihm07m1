@@ -66,12 +66,12 @@ const CharResults_t* MotorChar_GetResults(void) {
 }
 
 uint8_t MotorChar_GetProgressPct(void) {
-    /* Total duration approx 7000 ms */
+    /* Total duration approx 10300 ms */
     if (s_char_state == CHAR_STATE_IDLE) return 0;
     if (s_char_state == CHAR_STATE_COMPLETE) return 100;
     if (s_char_state == CHAR_STATE_ABORTED) return 0;
 
-    uint32_t pct = (s_total_timer_ms * 100) / 7200;
+    uint32_t pct = (s_total_timer_ms * 100) / 10300;
     if (pct > 99) pct = 99;
     return (uint8_t)pct;
 }
@@ -275,28 +275,32 @@ void MotorChar_Update1ms(void) {
             break;
 
         /* ====================================================================
-         * Step 3: Rotor Alignment & Stiction Threshold Test (1000 ms)
+         * Step 3: Rotor Alignment & Settle Phase (1200 ms)
          * ==================================================================== */
         case CHAR_STATE_ALIGNMENT_STICTION:
-            strncpy(s_results.status_msg, "Step 3/5: Rotor Alignment & Stiction Test...", sizeof(s_results.status_msg) - 1);
+            strncpy(s_results.status_msg, "Step 3/5: Rotor Alignment & Settle...", sizeof(s_results.status_msg) - 1);
             {
-                /* Voltage-normalized alignment ramp: 1.20 V to 2.40 V target */
+                /* Voltage-normalized alignment ramp: 0.80 V to 1.60 V target over 400 ms, then 800 ms hold */
                 float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
-                float progress = (float)s_step_timer_ms / 1000.0f;
-                float target_v = 1.20f + (progress * 1.20f);
+                float target_v = 0.80f;
+                if (s_step_timer_ms < 400) {
+                    target_v = 0.80f + ((float)s_step_timer_ms / 400.0f) * 0.80f;
+                } else {
+                    target_v = 1.60f;
+                }
                 float align_duty = (target_v / vbus_now) * 100.0f;
-                if (align_duty < 4.0f) align_duty = 4.0f;
-                if (align_duty > 30.0f) align_duty = 30.0f;
+                if (align_duty < 3.0f) align_duty = 3.0f;
+                if (align_duty > 25.0f) align_duty = 25.0f;
 
                 Motor_SetSinusoidalOutput(0.0f, align_duty);
                 PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
-                if (s_step_timer_ms > 600) {
+                if (s_step_timer_ms > 800) {
                     s_accum_curr += telem.current_peak_amps;
                     s_sample_count++;
                 }
 
-                if (s_step_timer_ms >= 1000) {
+                if (s_step_timer_ms >= 1200) {
                     s_results.stiction_current_amps = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.35f;
                     s_results.min_align_duty_pct = align_duty;
 
@@ -310,40 +314,40 @@ void MotorChar_Update1ms(void) {
             break;
 
         /* ====================================================================
-         * Step 4a: Dynamic Spin at 50 Hz Electrical (2500 ms)
+         * Step 4a: Dynamic Spin Point 1 (25 Hz Electrical / ~107 RPM) (4000 ms)
          * ==================================================================== */
         case CHAR_STATE_DYNAMIC_SPIN_50HZ:
-            strncpy(s_results.status_msg, "Step 4/5: Dynamic Back-EMF Spin (50 Hz)...", sizeof(s_results.status_msg) - 1);
+            strncpy(s_results.status_msg, "Step 4/5: Dynamic Spin 1 (25 Hz / ~107 RPM)...", sizeof(s_results.status_msg) - 1);
             {
-                /* 500 ms ramp 0->50Hz, then 2000 ms steady */
-                float freq = 50.0f;
-                if (s_step_timer_ms < 500) {
-                    freq = 2.0f + ((float)s_step_timer_ms / 500.0f) * 48.0f;
+                /* Smooth 2500 ms ramp 0.5 -> 25 Hz (~43 RPM/s), then 1500 ms steady */
+                float freq = 25.0f;
+                if (s_step_timer_ms < 2500) {
+                    freq = 0.5f + ((float)s_step_timer_ms / 2500.0f) * 24.5f;
                 }
 
                 float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
-                float target_v_50 = 2.64f; /* 2.64 V stator target at 50 Hz */
-                float duty_50 = (target_v_50 / vbus_now) * 100.0f;
-                if (duty_50 < 6.0f) duty_50 = 6.0f;
-                if (duty_50 > 30.0f) duty_50 = 30.0f;
+                float target_v_25 = 1.60f + (freq / 25.0f) * 0.40f; /* 1.60V to 2.00V */
+                float duty_25 = (target_v_25 / vbus_now) * 100.0f;
+                if (duty_25 < 4.0f) duty_25 = 4.0f;
+                if (duty_25 > 25.0f) duty_25 = 25.0f;
 
-                Motor_SetSinusoidalOutput(freq, duty_50);
+                Motor_SetSinusoidalOutput(freq, duty_25);
                 PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
-                if (s_step_timer_ms > 1200) {
+                if (s_step_timer_ms > 2700) {
                     s_accum_curr += telem.current_peak_amps;
                     s_accum_vbus += telem.vbus_v;
                     s_sample_count++;
                 }
 
-                if (s_step_timer_ms >= 2500) {
+                if (s_step_timer_ms >= 4000) {
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.35f;
                     float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
                     s_i50 = avg_i;
-                    s_v50 = (duty_50 / 100.0f) * avg_vbus;
+                    s_v50 = (duty_25 / 100.0f) * avg_vbus;
                     const MotorControl_t* ctrl = Motor_GetControl();
                     uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 14;
-                    s_rpm50 = (50.0f * 60.0f) / (float)pp;
+                    s_rpm50 = (25.0f * 60.0f) / (float)pp;
 
                     s_step_timer_ms = 0;
                     s_accum_curr = 0.0f;
@@ -355,39 +359,40 @@ void MotorChar_Update1ms(void) {
             break;
 
         /* ====================================================================
-         * Step 4b: Dynamic Spin at 100 Hz Electrical (2500 ms)
+         * Step 4b: Dynamic Spin Point 2 (50 Hz Electrical / ~214 RPM) (4000 ms)
          * ==================================================================== */
         case CHAR_STATE_DYNAMIC_SPIN_100HZ:
-            strncpy(s_results.status_msg, "Step 4/5: Dynamic Back-EMF Spin (100 Hz)...", sizeof(s_results.status_msg) - 1);
+            strncpy(s_results.status_msg, "Step 4/5: Dynamic Spin 2 (50 Hz / ~214 RPM)...", sizeof(s_results.status_msg) - 1);
             {
-                float freq = 100.0f;
-                if (s_step_timer_ms < 500) {
-                    freq = 50.0f + ((float)s_step_timer_ms / 500.0f) * 50.0f;
+                /* Smooth 2500 ms ramp 25 -> 50 Hz (~43 RPM/s), then 1500 ms steady */
+                float freq = 50.0f;
+                if (s_step_timer_ms < 2500) {
+                    freq = 25.0f + ((float)s_step_timer_ms / 2500.0f) * 25.0f;
                 }
 
                 float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
-                float target_v_100 = 3.36f; /* 3.36 V stator target at 100 Hz */
-                float duty_100 = (target_v_100 / vbus_now) * 100.0f;
-                if (duty_100 < 8.0f) duty_100 = 8.0f;
-                if (duty_100 > 38.0f) duty_100 = 38.0f;
+                float target_v_50 = 2.00f + ((freq - 25.0f) / 25.0f) * 0.60f; /* 2.00V to 2.60V */
+                float duty_50 = (target_v_50 / vbus_now) * 100.0f;
+                if (duty_50 < 6.0f) duty_50 = 6.0f;
+                if (duty_50 > 30.0f) duty_50 = 30.0f;
 
-                Motor_SetSinusoidalOutput(freq, duty_100);
+                Motor_SetSinusoidalOutput(freq, duty_50);
                 PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
 
-                if (s_step_timer_ms > 1200) {
+                if (s_step_timer_ms > 2700) {
                     s_accum_curr += telem.current_peak_amps;
                     s_accum_vbus += telem.vbus_v;
                     s_sample_count++;
                 }
 
-                if (s_step_timer_ms >= 2500) {
+                if (s_step_timer_ms >= 4000) {
                     float avg_i = (s_sample_count > 0) ? (s_accum_curr / (float)s_sample_count) : 0.40f;
                     float avg_vbus = (s_sample_count > 0) ? (s_accum_vbus / (float)s_sample_count) : 24.0f;
                     s_i100 = avg_i;
-                    s_v100 = (duty_100 / 100.0f) * avg_vbus;
+                    s_v100 = (duty_50 / 100.0f) * avg_vbus;
                     const MotorControl_t* ctrl = Motor_GetControl();
                     uint8_t pp = ctrl->pole_pairs ? ctrl->pole_pairs : 14;
-                    s_rpm100 = (100.0f * 60.0f) / (float)pp;
+                    s_rpm100 = (50.0f * 60.0f) / (float)pp;
 
                     s_step_timer_ms = 0;
                     s_char_state = CHAR_STATE_CALCULATING;
@@ -405,32 +410,34 @@ void MotorChar_Update1ms(void) {
             PowerStage_StopPWM();
 
             {
-                /* Estimate Back-EMF opposing voltages */
-                float e50 = s_v50 - (s_i50 * s_results.r_phase_ohm);
-                float e100 = s_v100 - (s_i100 * s_results.r_phase_ohm);
-                if (e50 < 0.5f) e50 = 0.5f;
-                if (e100 < 1.0f) e100 = 1.0f;
+                /* Estimate Back-EMF opposing voltages: e = V - I * Rs */
+                float e1 = s_v50 - (s_i50 * s_results.r_phase_ohm * 1.5f);
+                float e2 = s_v100 - (s_i100 * s_results.r_phase_ohm * 1.5f);
+                if (e1 < 0.2f) e1 = 0.2f;
+                if (e2 < 0.5f) e2 = 0.5f;
 
-                float kv = (s_rpm100 - s_rpm50) / (e100 - e50);
-                if (kv < 100.0f || kv > 5000.0f) {
-                    /* Fallback to single-point estimate */
-                    kv = s_rpm100 / e100;
+                float kv = 360.0f;
+                if ((e2 - e1) > 0.15f && (s_rpm100 - s_rpm50) > 30.0f) {
+                    kv = (s_rpm100 - s_rpm50) / (e2 - e1);
+                } else if (e2 > 0.3f) {
+                    kv = s_rpm100 / e2;
                 }
+
                 if (kv < 120.0f) kv = 120.0f;
-                if (kv > 3500.0f) kv = 3500.0f;
+                if (kv > 2500.0f) kv = 2500.0f;
 
                 s_results.kv_rating = kv;
                 s_results.ke_v_krpm = 1000.0f / kv;
 
                 /* Recommend Base Duty and V/F Slope scaled to active bus voltage */
                 float vbus_now = (telem.vbus_v > 8.0f) ? telem.vbus_v : 24.0f;
-                float rec_base = (2.40f / vbus_now) * 100.0f;
-                if (rec_base < 6.0f) rec_base = 6.0f;
-                if (rec_base > 22.0f) rec_base = 22.0f;
+                float rec_base = (1.40f / vbus_now) * 100.0f; /* 1.40V starting boost */
+                if (rec_base < 4.0f) rec_base = 4.0f;
+                if (rec_base > 15.0f) rec_base = 15.0f;
 
-                float rec_slope = (1000.0f / kv) * (100.0f / vbus_now) * 1.2f;
-                if (rec_slope < 10.0f) rec_slope = 10.0f;
-                if (rec_slope > 28.0f) rec_slope = 28.0f;
+                float rec_slope = (1000.0f / kv) * (100.0f / vbus_now) * 2.5f;
+                if (rec_slope < 15.0f) rec_slope = 15.0f;
+                if (rec_slope > 50.0f) rec_slope = 50.0f;
 
                 s_results.recommended_base_duty = rec_base;
                 s_results.recommended_vf_slope = rec_slope;

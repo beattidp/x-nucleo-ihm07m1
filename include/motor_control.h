@@ -60,6 +60,8 @@ typedef struct MotorControl_s {
     float accel_slew_rpm_s;         /* Acceleration slew rate (RPM / second) */
     float min_rpm;                  /* Minimum RPM */
     float max_rpm;                  /* Maximum RPM */
+    float phase_resistance_ohm;     /* Motor phase resistance in Ohms */
+    float kv_rating;                /* Motor velocity constant (RPM/V) */
 } MotorControl_t;
 
 /* Core Motor Control API */

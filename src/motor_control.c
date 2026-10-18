@@ -13,46 +13,47 @@ static MotorTelemetry_t g_telemetry;
 /* Motor initialization flag to prevent SysTick ISR preemption before init completes */
 static volatile bool s_motor_initialized = false;
 
-/* 256-point Q12 fixed-point sinusoidal modulation table: (0.5 + 0.5*sin(theta)) * 4096 */
-static const uint16_t s_sin_table_q12[256] = {
-    2048, 2098, 2148, 2199, 2249, 2299, 2349, 2398,
-    2448, 2497, 2546, 2594, 2643, 2690, 2738, 2785,
-    2832, 2878, 2924, 2969, 3013, 3057, 3101, 3144,
-    3186, 3227, 3268, 3308, 3347, 3386, 3423, 3460,
-    3496, 3531, 3565, 3599, 3631, 3663, 3693, 3722,
-    3751, 3778, 3805, 3830, 3854, 3877, 3899, 3920,
-    3940, 3959, 3976, 3993, 4008, 4022, 4035, 4046,
-    4057, 4066, 4074, 4081, 4086, 4090, 4094, 4095,
-    4096, 4095, 4094, 4090, 4086, 4081, 4074, 4066,
-    4057, 4046, 4035, 4022, 4008, 3993, 3976, 3959,
-    3940, 3920, 3899, 3877, 3854, 3830, 3805, 3778,
-    3751, 3722, 3693, 3663, 3631, 3599, 3565, 3531,
-    3496, 3460, 3423, 3386, 3347, 3308, 3268, 3227,
-    3186, 3144, 3101, 3057, 3013, 2969, 2924, 2878,
-    2832, 2785, 2738, 2690, 2643, 2594, 2546, 2497,
-    2448, 2398, 2349, 2299, 2249, 2199, 2148, 2098,
-    2048, 1998, 1948, 1897, 1847, 1797, 1747, 1698,
-    1648, 1599, 1550, 1502, 1453, 1406, 1358, 1311,
-    1264, 1218, 1172, 1127, 1083, 1039,  995,  952,
-     910,  869,  828,  788,  749,  710,  673,  636,
-     600,  565,  531,  497,  465,  433,  403,  374,
-     345,  318,  291,  266,  242,  219,  197,  176,
-     156,  137,  120,  103,   88,   74,   61,   50,
-      39,   30,   22,   15,   10,    6,    2,    1,
-       0,    1,    2,    6,   10,   15,   22,   30,
-      39,   50,   61,   74,   88,  103,  120,  137,
-     156,  176,  197,  219,  242,  266,  291,  318,
-     345,  374,  403,  433,  465,  497,  531,  565,
-     600,  636,  673,  710,  749,  788,  828,  869,
-     910,  952,  995, 1039, 1083, 1127, 1172, 1218,
-    1264, 1311, 1358, 1406, 1453, 1502, 1550, 1599,
-    1648, 1698, 1747, 1797, 1847, 1897, 1948, 1998
+/* 256-point signed Q11 sinusoidal modulation table: round(2047.0 * sin(theta)) */
+static const int16_t s_sin_table_s12[256] = {
+        0,    50,   100,   151,   201,   251,   300,   350,
+      399,   449,   497,   546,   594,   642,   690,   737,
+      783,   830,   875,   920,   965,  1009,  1052,  1095,
+     1137,  1179,  1219,  1259,  1299,  1337,  1375,  1411,
+     1447,  1483,  1517,  1550,  1582,  1614,  1644,  1674,
+     1702,  1729,  1756,  1781,  1805,  1828,  1850,  1871,
+     1891,  1910,  1927,  1944,  1959,  1973,  1986,  1997,
+     2008,  2017,  2025,  2032,  2037,  2041,  2045,  2046,
+     2047,  2046,  2045,  2041,  2037,  2032,  2025,  2017,
+     2008,  1997,  1986,  1973,  1959,  1944,  1927,  1910,
+     1891,  1871,  1850,  1828,  1805,  1781,  1756,  1729,
+     1702,  1674,  1644,  1614,  1582,  1550,  1517,  1483,
+     1447,  1411,  1375,  1337,  1299,  1259,  1219,  1179,
+     1137,  1095,  1052,  1009,   965,   920,   875,   830,
+      783,   737,   690,   642,   594,   546,   497,   449,
+      399,   350,   300,   251,   201,   151,   100,    50,
+        0,   -50,  -100,  -151,  -201,  -251,  -300,  -350,
+     -399,  -449,  -497,  -546,  -594,  -642,  -690,  -737,
+     -783,  -830,  -875,  -920,  -965, -1009, -1052, -1095,
+    -1137, -1179, -1219, -1259, -1299, -1337, -1375, -1411,
+    -1447, -1483, -1517, -1550, -1582, -1614, -1644, -1674,
+    -1702, -1729, -1756, -1781, -1805, -1828, -1850, -1871,
+    -1891, -1910, -1927, -1944, -1959, -1973, -1986, -1997,
+    -2008, -2017, -2025, -2032, -2037, -2041, -2045, -2046,
+    -2047, -2046, -2045, -2041, -2037, -2032, -2025, -2017,
+    -2008, -1997, -1986, -1973, -1959, -1944, -1927, -1910,
+    -1891, -1871, -1850, -1828, -1805, -1781, -1756, -1729,
+    -1702, -1674, -1644, -1614, -1582, -1550, -1517, -1483,
+    -1447, -1411, -1375, -1337, -1299, -1259, -1219, -1179,
+    -1137, -1095, -1052, -1009,  -965,  -920,  -875,  -830,
+     -783,  -737,  -690,  -642,  -594,  -546,  -497,  -449,
+     -399,  -350,  -300,  -251,  -201,  -151,  -100,   -50
 };
 
 /* 32-bit fixed point phase accumulator (top 8 bits = index into 256-point table) */
 static volatile uint32_t s_phase_accum = 0;
 static volatile int32_t s_phase_step = 0;
 static volatile uint32_t s_active_ccr_scale = 0;
+static volatile uint16_t s_half_arr = 2124;
 static float g_open_loop_angle = 0.0f;
 
 /* Quiescent zero-current ADC offsets (measured at boot when bridge is off) */
@@ -103,6 +104,8 @@ void Motor_ApplyProfile(const MotorProfile_t* prof) {
     g_motor_ctrl.accel_slew_rpm_s = prof->accel_slew_rpm_s;
     g_motor_ctrl.min_rpm = prof->min_rpm;
     g_motor_ctrl.max_rpm = prof->max_rpm;
+    g_motor_ctrl.phase_resistance_ohm = prof->phase_resistance_ohm;
+    g_motor_ctrl.kv_rating = prof->kv_rating;
     g_motor_ctrl.torque_limit_amps = prof->max_continuous_amps;
     g_motor_ctrl.current_limit_amps = prof->hw_break_trip_amps;
 
@@ -165,7 +168,12 @@ void Motor_Start(void) {
         g_open_loop_angle = 0.0f;
         s_phase_accum = 0;
         s_phase_step = 0;
-        s_active_ccr_scale = (uint32_t)((g_motor_ctrl.duty_pct / 100.0f) * (float)PowerStage_GetCapabilities()->pwm_arr);
+
+        const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
+        uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
+        s_half_arr = arr / 2;
+        s_active_ccr_scale = 0;
+
         PowerStage_EnablePhase(POWER_STAGE_ALL_PHASES);
         PowerStage_StartPWM();
         PowerStage_SetStatusLED(false);
@@ -301,7 +309,6 @@ void Motor_Update1ms(void) {
     /* 3. Motor State Handling */
     float min_s = (g_motor_ctrl.min_rpm > 50.0f) ? g_motor_ctrl.min_rpm : MOTOR_POT_MIN_RPM;
     float max_s = (g_motor_ctrl.max_rpm > min_s) ? g_motor_ctrl.max_rpm : MOTOR_POT_MAX_RPM;
-    float vf_slope = (g_motor_ctrl.vf_slope_pct > 0.0f) ? g_motor_ctrl.vf_slope_pct : 32.0f;
 
     if (g_motor_ctrl.pot_control_enabled) {
         float pot_demanded_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
@@ -333,9 +340,11 @@ void Motor_Update1ms(void) {
     }
 
     if (g_motor_ctrl.state == MOTOR_STATE_BRAKING) {
-        /* Active controlled deceleration */
-        if (g_motor_ctrl.duty_pct > 2.0f) {
-            g_motor_ctrl.duty_pct -= 0.2f; /* Smooth deceleration slope */
+        /* Active controlled deceleration at double slew rate */
+        float decel_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
+                             (g_motor_ctrl.accel_slew_rpm_s * 2.0f / 1000.0f) : 0.120f;
+        if (g_motor_ctrl.actual_speed_rpm > decel_per_ms) {
+            g_motor_ctrl.actual_speed_rpm -= decel_per_ms;
         } else {
             Motor_Stop();
             return;
@@ -346,60 +355,88 @@ void Motor_Update1ms(void) {
 
     /* 4. Determine Active Frequency and Commanded Duty */
     float active_freq = 0.0f;
-    float duty_bemf = g_motor_ctrl.duty_pct;
+    float duty_demanded = g_motor_ctrl.duty_pct;
+    float vbus_now = (g_telemetry.vbus_v > 8.0f) ? g_telemetry.vbus_v : 24.0f;
 
     if (g_motor_ctrl.state == MOTOR_STATE_STARTING) {
         g_motor_ctrl.startup_timer_ms++;
 
-        if (g_motor_ctrl.startup_timer_ms < 500) {
-            /* 4.1 DC Alignment Phase (500 ms): Firmly lock rotor to electrical angle 0 */
+        if (g_motor_ctrl.startup_timer_ms < 1000) {
+            /* 4.1 DC Alignment Phase (1000 ms): Firmly lock rotor to electrical angle 0 */
             active_freq = 0.0f;
             s_phase_accum = 0;
             s_phase_step = 0;
             g_open_loop_angle = 0.0f;
             g_motor_ctrl.actual_speed_rpm = 0.0f;
             g_motor_ctrl.current_freq_hz = 0.0f;
-            duty_bemf = g_motor_ctrl.duty_pct + 2.0f; /* Solid stiction-breaking alignment torque */
-        } else if (g_motor_ctrl.startup_timer_ms < (500 + 3500)) {
-            /* 4.2 Smooth Acceleration Ramp (3.5 seconds): 2 Hz -> f_target */
-            uint32_t ramp_elapsed = g_motor_ctrl.startup_timer_ms - 500;
-            float progress = (float)ramp_elapsed / 3500.0f;
-            float f_start = 2.0f;
-            float f_target = g_motor_ctrl.electrical_freq_hz;
-            active_freq = f_start + progress * (f_target - f_start);
-            g_motor_ctrl.current_freq_hz = active_freq;
-            g_motor_ctrl.actual_speed_rpm = (active_freq * 60.0f) / (float)g_motor_ctrl.pole_pairs;
 
-            /* Automatic V/F Back-EMF tracking based on profile slope */
-            float speed_ratio = (g_motor_ctrl.actual_speed_rpm - min_s) / (max_s - min_s);
-            if (speed_ratio < 0.0f) speed_ratio = 0.0f;
-            if (speed_ratio > 1.0f) speed_ratio = 1.0f;
-            duty_bemf = g_motor_ctrl.duty_pct + (speed_ratio * vf_slope);
+            /* Gentle 1.20 V alignment boost to settle high-inertia flywheel */
+            duty_demanded = (1.20f / vbus_now) * 100.0f;
         } else {
-            /* Ramp complete: transition smoothly to RUNNING */
-            g_motor_ctrl.state = MOTOR_STATE_RUNNING;
-            active_freq = g_motor_ctrl.electrical_freq_hz;
-            g_motor_ctrl.current_freq_hz = active_freq;
-            g_motor_ctrl.actual_speed_rpm = (active_freq * 60.0f) / (float)g_motor_ctrl.pole_pairs;
+            /* 4.2 Inertia-Aware Acceleration Ramp: strictly follow accel_slew_rpm_s */
+            float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
+                                    (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
 
-            float speed_ratio = (g_motor_ctrl.actual_speed_rpm - min_s) / (max_s - min_s);
-            if (speed_ratio < 0.0f) speed_ratio = 0.0f;
-            if (speed_ratio > 1.0f) speed_ratio = 1.0f;
-            duty_bemf = g_motor_ctrl.duty_pct + (speed_ratio * vf_slope);
+            /* Initialize from 1.0 Hz electrical (~4.3 RPM for 14 PP) */
+            float min_start_rpm = (1.0f * 60.0f) / (float)g_motor_ctrl.pole_pairs;
+            if (g_motor_ctrl.actual_speed_rpm < min_start_rpm) {
+                g_motor_ctrl.actual_speed_rpm = min_start_rpm;
+            } else {
+                g_motor_ctrl.actual_speed_rpm += max_slew_per_ms;
+            }
+
+            if (g_motor_ctrl.actual_speed_rpm >= g_motor_ctrl.target_speed_rpm) {
+                g_motor_ctrl.actual_speed_rpm = g_motor_ctrl.target_speed_rpm;
+                g_motor_ctrl.state = MOTOR_STATE_RUNNING;
+            }
+
+            active_freq = (g_motor_ctrl.actual_speed_rpm * (float)g_motor_ctrl.pole_pairs) / 60.0f;
+            g_motor_ctrl.current_freq_hz = active_freq;
+
+            /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
+            float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
+            float rs = (g_motor_ctrl.phase_resistance_ohm > 0.05f) ? g_motor_ctrl.phase_resistance_ohm : 0.50f;
+            float i_target = 0.70f; /* 0.70 A magnetizing current */
+            float v_boost = i_target * rs * 2.0f; /* Line-to-line IR compensation */
+            if (v_boost < 0.80f) v_boost = 0.80f;
+            if (v_boost > 2.00f) v_boost = 2.00f;
+
+            float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
+            float v_target = v_boost + v_bemf;
+            duty_demanded = (v_target / vbus_now) * 100.0f;
         }
     } else if (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_BRAKING) {
-        active_freq = g_motor_ctrl.electrical_freq_hz;
-        g_motor_ctrl.current_freq_hz = active_freq;
-        g_motor_ctrl.actual_speed_rpm = (active_freq * 60.0f) / (float)g_motor_ctrl.pole_pairs;
+        if (g_motor_ctrl.state == MOTOR_STATE_RUNNING) {
+            /* Slew actual speed toward target speed at accel_slew_rpm_s */
+            float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
+            float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
+                                    (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
+            if (fabsf(speed_diff) <= max_slew_per_ms) {
+                g_motor_ctrl.actual_speed_rpm = g_motor_ctrl.target_speed_rpm;
+            } else if (speed_diff > 0.0f) {
+                g_motor_ctrl.actual_speed_rpm += max_slew_per_ms;
+            } else {
+                g_motor_ctrl.actual_speed_rpm -= max_slew_per_ms;
+            }
+        }
 
-        /* Automatic V/F Back-EMF tracking based on profile slope */
-        float speed_ratio = (g_motor_ctrl.actual_speed_rpm - min_s) / (max_s - min_s);
-        if (speed_ratio < 0.0f) speed_ratio = 0.0f;
-        if (speed_ratio > 1.0f) speed_ratio = 1.0f;
-        duty_bemf = g_motor_ctrl.duty_pct + (speed_ratio * vf_slope);
+        active_freq = (g_motor_ctrl.actual_speed_rpm * (float)g_motor_ctrl.pole_pairs) / 60.0f;
+        g_motor_ctrl.current_freq_hz = active_freq;
+
+        /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
+        float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
+        float rs = (g_motor_ctrl.phase_resistance_ohm > 0.05f) ? g_motor_ctrl.phase_resistance_ohm : 0.50f;
+        float i_target = 0.70f;
+        float v_boost = i_target * rs * 2.0f;
+        if (v_boost < 0.80f) v_boost = 0.80f;
+        if (v_boost > 2.00f) v_boost = 2.00f;
+
+        float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
+        float v_target = v_boost + v_bemf;
+        duty_demanded = (v_target / vbus_now) * 100.0f;
     }
 
-    /* 4.3 Filtered Current Monitoring & Sustained Stall Protection */
+    /* 4.3 Filtered Current Monitoring & Soft Current Foldback */
     static float s_filt_current = 0.0f;
     static uint16_t s_overcurrent_timer_ms = 0;
 
@@ -407,13 +444,19 @@ void Motor_Update1ms(void) {
         s_filt_current = 0.0f;
         s_overcurrent_timer_ms = 0;
     } else {
-        /* Single-pole IIR low-pass filter (cutoff ~6 Hz at 1 kHz sample rate) to reject switching noise */
-        s_filt_current = (s_filt_current * 0.96f) + (g_telemetry.current_peak_amps * 0.04f);
+        /* Single-pole IIR low-pass filter (cutoff ~6 Hz) to reject switching noise */
+        s_filt_current = (s_filt_current * 0.98f) + (g_telemetry.current_peak_amps * 0.02f);
 
-        /* If sustained current exceeds torque_limit_amps for >1.5 seconds, shut down (stall) */
+        /* Soft current regulation: trigger only when current exceeds continuous limit */
         if (s_filt_current > g_motor_ctrl.torque_limit_amps) {
+            float excess = s_filt_current - g_motor_ctrl.torque_limit_amps;
+            float duty_trim = excess * 6.0f;
+            if (duty_trim > (duty_demanded - 2.0f)) duty_trim = duty_demanded - 2.0f;
+            duty_demanded -= duty_trim;
+
             s_overcurrent_timer_ms++;
-            if (s_overcurrent_timer_ms > 1500) {
+            if (s_overcurrent_timer_ms > 2000) {
+                /* Sustained 2-second overcurrent stall fault */
                 g_motor_ctrl.state = MOTOR_STATE_FAULT;
                 g_telemetry.fault_active = true;
                 PowerStage_DisableBridge();
@@ -425,38 +468,20 @@ void Motor_Update1ms(void) {
         }
     }
 
-    /* 4.4 Dynamic Torque Limiting & Current Foldback Regulator */
-    float duty_torque_adjust = 0.0f;
-    float current_thresh = g_motor_ctrl.torque_limit_amps * 0.75f;
-    if (s_filt_current > current_thresh) {
-        /* Proportional foldback: up to 15% duty reduction per 1.0 A excess current */
-        float over_i = s_filt_current - current_thresh;
-        duty_torque_adjust = over_i * 15.0f;
-        if (duty_torque_adjust > (duty_bemf - 4.0f)) {
-            duty_torque_adjust = duty_bemf - 4.0f;
-        }
-    }
-
-    float active_duty = duty_bemf - duty_torque_adjust;
-
-    /* 4.5 Supply Voltage Feedforward Scaling: Scale duty inversely with bus voltage */
-    float vbus = (g_telemetry.vbus_v > 8.0f) ? g_telemetry.vbus_v : 12.0f;
-    const MotorProfile_t* active_prof = MotorProfiles_GetActive();
-    float rated_v = (active_prof && active_prof->rated_voltage_v > 8.0f) ? active_prof->rated_voltage_v : 12.0f;
-    float v_scale = rated_v / vbus;
-    if (v_scale > 1.5f) v_scale = 1.5f;
-    if (v_scale < 0.35f) v_scale = 0.35f;
-
-    float scaled_active_duty = active_duty * v_scale;
-    float min_duty_clamp = 4.0f * (12.0f / vbus);
-    if (min_duty_clamp < 2.0f) min_duty_clamp = 2.0f;
-    if (scaled_active_duty < min_duty_clamp) scaled_active_duty = min_duty_clamp;
-    if (scaled_active_duty > 75.0f) scaled_active_duty = 75.0f;
-    g_motor_ctrl.active_duty_pct = scaled_active_duty;
+    /* 4.4 Duty Cycle Clamping & Scale Computation */
+    if (duty_demanded < 2.0f) duty_demanded = 2.0f;
+    if (duty_demanded > 75.0f) duty_demanded = 75.0f;
+    g_motor_ctrl.active_duty_pct = duty_demanded;
 
     /* Update parameters for the ultrafast 20 kHz TIM1 Update ISR */
     uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
-    s_active_ccr_scale = (uint32_t)((scaled_active_duty / 100.0f) * (float)arr);
+    uint16_t half = arr / 2;
+    s_half_arr = half;
+
+    /* Center-biased SPWM: duty_demanded maps 0..100% to modulation amplitude 0..half */
+    uint32_t scale = (uint32_t)((duty_demanded / 100.0f) * (float)half);
+    if (scale > (uint32_t)(half - 10)) scale = (uint32_t)(half - 10);
+    s_active_ccr_scale = scale;
 
     /* Phase step per 20 kHz PWM cycle: step = (freq * 2^32) / 20000 = freq * 214748.3648 */
     int32_t step = (int32_t)(active_freq * 214748.3648f);
@@ -476,7 +501,7 @@ void Motor_Update1ms(void) {
         uint8_t step_num = (uint8_t)((g_open_loop_angle / TWO_PI) * 6.0f) + 1;
         if (step_num > 6) step_num = 6;
 
-        uint16_t pwm_val = (uint16_t)((scaled_active_duty / 100.0f) * (float)arr);
+        uint16_t pwm_val = (uint16_t)((duty_demanded / 100.0f) * (float)arr);
 
         switch (step_num) {
             case 1:
@@ -521,7 +546,14 @@ void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct) {
     }
     const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
     uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
-    s_active_ccr_scale = (uint32_t)((duty_pct / 100.0f) * (float)arr);
+    uint16_t half = arr / 2;
+    s_half_arr = half;
+
+    /* Center-biased SPWM: duty_pct maps to modulation amplitude 0..half */
+    uint32_t scale = (uint32_t)((duty_pct / 100.0f) * (float)half);
+    if (scale > (uint32_t)(half - 10)) scale = (uint32_t)(half - 10);
+    s_active_ccr_scale = scale;
+
     int32_t step = (int32_t)(freq_hz * 214748.3648f);
     if (g_motor_ctrl.direction < 0) {
         step = -step;
@@ -530,8 +562,8 @@ void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct) {
 }
 
 /**
- * @brief 20 kHz TIM1 PWM Update ISR (Ultra-Fast Fixed-Point Sine Modulation)
- *        Takes ~15 clock cycles (0.088 us, <0.2% CPU load at 20 kHz) with zero floating point library overhead!
+ * @brief 20 kHz TIM1 PWM Update ISR (Ultra-Fast Center-Biased Bipolar SPWM)
+ *        Takes ~18 clock cycles (0.10 us, <0.2% CPU load at 20 kHz) with zero floating point library overhead!
  */
 void Motor_PWM_UpdateISR(void) {
     if (g_motor_ctrl.state == MOTOR_STATE_RUNNING || 
@@ -544,10 +576,16 @@ void Motor_PWM_UpdateISR(void) {
             uint8_t v_idx = (uint8_t)(u_idx + 85);   /* +120 deg */
             uint8_t w_idx = (uint8_t)(u_idx + 171);  /* +240 deg */
 
-            uint32_t scale = s_active_ccr_scale;
-            htim1.Instance->CCR1 = (uint32_t)((s_sin_table_q12[u_idx] * scale) >> 12);
-            htim1.Instance->CCR2 = (uint32_t)((s_sin_table_q12[v_idx] * scale) >> 12);
-            htim1.Instance->CCR3 = (uint32_t)((s_sin_table_q12[w_idx] * scale) >> 12);
+            int32_t scale = (int32_t)s_active_ccr_scale;
+            int32_t half = (int32_t)s_half_arr;
+
+            int32_t du = ((int32_t)s_sin_table_s12[u_idx] * scale) >> 11;
+            int32_t dv = ((int32_t)s_sin_table_s12[v_idx] * scale) >> 11;
+            int32_t dw = ((int32_t)s_sin_table_s12[w_idx] * scale) >> 11;
+
+            htim1.Instance->CCR1 = (uint32_t)(half + du);
+            htim1.Instance->CCR2 = (uint32_t)(half + dv);
+            htim1.Instance->CCR3 = (uint32_t)(half + dw);
         }
     }
 }
