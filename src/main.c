@@ -190,8 +190,9 @@ int main(void) {
                 Console_RenderDashboard(&telem, ctrl, hb_spin[hb_idx]);
             }
 #else
-            printf("Uptime: %lu ms | VBUS: %.2f V | Duty: %.1f %% | Current: %.2f A\r\n",
-                   (unsigned long)now, telem.vbus_v, ctrl->duty_pct, telem.current_peak_amps);
+            printf("Uptime: %lu ms | VBUS: %.2f V | Duty: %.1f %% | Current: %.2f A | Opt RPM: %.1f | Stall: %s\r\n",
+                   (unsigned long)now, telem.vbus_v, ctrl->duty_pct, telem.current_peak_amps,
+                   telem.optical_rpm, telem.motor_stalled ? "YES" : "NO");
 #endif
         }
 

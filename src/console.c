@@ -202,6 +202,7 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Speed Potentiometer (R42)  : \r\n");
     printf(" Driver Status (%-5s DIAG) : \r\n", (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230");
     printf(" Hall Sensor Signals (H321) : \r\n");
+    printf(" Optical Tachometer (J3-Z+) : \r\n");
     printf("------------------------------------------------------------------------------\r\n");
     printf(" MOTOR DRIVE STATUS\r\n");
     printf("------------------------------------------------------------------------------\r\n");
@@ -263,6 +264,10 @@ typedef struct {
     bool pot_ctrl;
     bool fault_active;
     uint8_t hall_state;
+    int optical_rpm;
+    uint32_t optical_pulse_count;
+    bool motor_stalled;
+    bool motor_slipping;
     MotorState_t state;
     MotorMode_t mode;
     uint8_t prof_idx;
@@ -390,65 +395,94 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
         s_main_shadow.hall_state = telem->hall_state;
     }
 
-    /* 8. Drive State: Row 17, Col 31 */
+    /* 7.5. Optical Tachometer: Row 14, Col 31 */
+    int opt_rpm_int = (int)telem->optical_rpm;
+    if (!s_main_shadow.valid || opt_rpm_int != s_main_shadow.optical_rpm ||
+        telem->optical_pulse_count != s_main_shadow.optical_pulse_count ||
+        telem->motor_stalled != s_main_shadow.motor_stalled ||
+        telem->motor_slipping != s_main_shadow.motor_slipping) {
+        const char* status_tag;
+        if (telem->motor_stalled) {
+            status_tag = "\033[1;31m[STALLED / LOCKED]\033[0m   ";
+        } else if (telem->motor_slipping) {
+            status_tag = "\033[1;33m[SLIPPING / VIBRATING]\033[0m";
+        } else if (opt_rpm_int > 10) {
+            status_tag = "\033[1;32m[ROTATING - OK]\033[0m      ";
+        } else if (ctrl->state == MOTOR_STATE_STOPPED) {
+            status_tag = "[STOPPED]            ";
+        } else if (ctrl->state == MOTOR_STATE_STARTING) {
+            status_tag = "[ALIGN / RAMPING]    ";
+        } else {
+            status_tag = "[WAITING FOR PULSE]  ";
+        }
+        printf("\033[14;31H%4d RPM (Revs: %5lu) %s",
+               opt_rpm_int, (unsigned long)telem->optical_pulse_count, status_tag);
+        s_main_shadow.optical_rpm = opt_rpm_int;
+        s_main_shadow.optical_pulse_count = telem->optical_pulse_count;
+        s_main_shadow.motor_stalled = telem->motor_stalled;
+        s_main_shadow.motor_slipping = telem->motor_slipping;
+    }
+
+    /* 8. Drive State: Row 18, Col 31 */
     if (!s_main_shadow.valid || ctrl->state != s_main_shadow.state) {
         const char* state_str = (ctrl->state == MOTOR_STATE_STOPPED) ? "STOPPED" :
                                 (ctrl->state == MOTOR_STATE_STARTING) ? "STARTING (ALIGN & RAMP)" :
                                 (ctrl->state == MOTOR_STATE_RUNNING) ? "RUNNING" :
                                 (ctrl->state == MOTOR_STATE_BRAKING) ? "ACTIVE BRAKING" :
                                 (ctrl->state == MOTOR_STATE_CHARACTERIZING) ? "CHARACTERIZING" : "FAULT";
-        printf("\033[17;31H%-35s", state_str);
+        printf("\033[18;31H%-35s", state_str);
         s_main_shadow.state = ctrl->state;
     }
 
-    /* 9. Control Strategy: Row 18, Col 31 */
+    /* 9. Control Strategy: Row 19, Col 31 */
     if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode) {
         const char* mode_str = (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) ? "STAGE 1: OPEN-LOOP V/F (SENSORLESS)" :
                                (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) ? "STAGE 2: 6-STEP VOLTAGE MODE" : "STAGE 3: 4-QUADRANT FOC";
-        printf("\033[18;31H%-35s", mode_str);
+        printf("\033[19;31H%-35s", mode_str);
         s_main_shadow.mode = ctrl->mode;
     }
 
-    /* 10. Active Motor Profile: Row 19, Col 31 */
+    /* 10. Active Motor Profile: Row 20, Col 31 */
     uint8_t prof_idx = MotorProfiles_GetActiveIndex() + 1;
     if (!s_main_shadow.valid || prof_idx != s_main_shadow.prof_idx) {
         const MotorProfile_t* active_prof = MotorProfiles_GetActive();
         uint8_t prof_total = MotorProfiles_GetCount();
-        printf("\033[19;31H[%u/%u] %s (%u PP, Max %4.2f A)%-6s",
+        printf("\033[20;31H[%u/%u] %s (%u PP, Max %4.2f A)%-6s",
                prof_idx, prof_total, active_prof ? active_prof->name : "Generic",
                ctrl->pole_pairs, ctrl->torque_limit_amps, "");
         s_main_shadow.prof_idx = prof_idx;
     }
 
-    /* 11. Target & Actual Speed: Row 20, Col 31 */
+    /* 11. Target & Actual Speed: Row 21, Col 31 */
     int spd_int = (int)ctrl->actual_speed_rpm;
     int tgt_int = (int)ctrl->target_speed_rpm;
     if (!s_main_shadow.valid || spd_int != s_main_shadow.actual_speed_rpm || 
-        tgt_int != s_main_shadow.target_speed_rpm || ctrl->direction != s_main_shadow.direction) {
-        printf("\033[20;31HTarget %4d RPM | Est %4d RPM (%s)   ",
-               tgt_int, spd_int, (ctrl->direction > 0) ? "CW " : "CCW");
+        tgt_int != s_main_shadow.target_speed_rpm || ctrl->direction != s_main_shadow.direction ||
+        opt_rpm_int != s_main_shadow.optical_rpm) {
+        printf("\033[21;31HTarget %4d | Est %4d | Real %4d RPM (%s)",
+               tgt_int, spd_int, opt_rpm_int, (ctrl->direction > 0) ? "CW " : "CCW");
         s_main_shadow.actual_speed_rpm = spd_int;
         s_main_shadow.target_speed_rpm = tgt_int;
         s_main_shadow.direction = ctrl->direction;
     }
 
-    /* 12. Commanded Torque Limit: Row 21, Col 31 */
+    /* 12. Commanded Torque Limit: Row 22, Col 31 */
     if (!s_main_shadow.valid || fabsf(ctrl->torque_limit_amps - s_main_shadow.torque_limit_amps) >= 0.05f) {
-        printf("\033[21;31H%4.2f A (Software Regulated Ceiling)", ctrl->torque_limit_amps);
+        printf("\033[22;31H%4.2f A (Software Regulated Ceiling)", ctrl->torque_limit_amps);
         s_main_shadow.torque_limit_amps = ctrl->torque_limit_amps;
     }
 
-    /* 13. Active Modulated Duty: Row 22, Col 31 */
+    /* 13. Active Modulated Duty: Row 23, Col 31 */
     if (!s_main_shadow.valid || fabsf(ctrl->active_duty_pct - s_main_shadow.active_duty_pct) >= 0.2f ||
         fabsf(ctrl->duty_pct - s_main_shadow.duty_pct) >= 0.2f) {
         uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
-        printf("\033[22;31H%4.1f %% (Base %4.1f %% | ARR = %u)  ",
+        printf("\033[23;31H%4.1f %% (Base %4.1f %% | ARR = %u)  ",
                ctrl->active_duty_pct, ctrl->duty_pct, arr);
         s_main_shadow.active_duty_pct = ctrl->active_duty_pct;
         s_main_shadow.duty_pct = ctrl->duty_pct;
     }
 
-    /* 14. Phase Currents (mA): Row 23, Col 31 */
+    /* 14. Phase Currents (mA): Row 24, Col 31 */
     int ia_ma = (int)(telem->current_a_amps * 1000.0f);
     int ib_ma = (int)(telem->current_b_amps * 1000.0f);
     int ic_ma = (int)(telem->current_c_amps * 1000.0f);
@@ -456,7 +490,7 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     if (!s_main_shadow.valid || abs(ia_ma - s_main_shadow.ia_ma) >= 5 ||
         abs(ib_ma - s_main_shadow.ib_ma) >= 5 || abs(ic_ma - s_main_shadow.ic_ma) >= 5 ||
         abs(ipk_ma - s_main_shadow.ipk_ma) >= 5) {
-        printf("\033[23;31HIA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]",
+        printf("\033[24;31HIA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]",
                ia_ma, ib_ma, ic_ma, ipk_ma);
         s_main_shadow.ia_ma = ia_ma;
         s_main_shadow.ib_ma = ib_ma;
@@ -464,16 +498,16 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
         s_main_shadow.ipk_ma = ipk_ma;
     }
 
-    /* 15. Hardware Break Trip Limit: Row 24, Col 31 */
+    /* 15. Hardware Break Trip Limit: Row 25, Col 31 */
     if (!s_main_shadow.valid || fabsf(ctrl->current_limit_amps - s_main_shadow.current_limit_amps) >= 0.05f) {
         const char* drv_name = (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230";
-        printf("\033[24;31H%.2f A (%s OCD Break)          ",
+        printf("\033[25;31H%.2f A (%s OCD Break)          ",
                ctrl->current_limit_amps, drv_name);
         s_main_shadow.current_limit_amps = ctrl->current_limit_amps;
     }
 
     /* Cleanly park cursor below dashboard and flush immediately */
-    printf("\033[29;1H");
+    printf("\033[30;1H");
     fflush(stdout);
     s_main_shadow.valid = true;
 }

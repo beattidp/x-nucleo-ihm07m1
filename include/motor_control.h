@@ -34,6 +34,10 @@ typedef struct MotorTelemetry_s {
     float current_peak_amps;        /* Highest instantaneous phase current */
     uint8_t hall_state;             /* Current Hall state (1 to 6) */
     bool fault_active;              /* L6230 DIAG line active (low) */
+    float optical_rpm;              /* Measured mechanical speed from photodetector tachometer (RPM) */
+    uint32_t optical_pulse_count;   /* Cumulative optical revolution pulse count */
+    bool motor_stalled;             /* True if drive commanded active but no physical rotation detected */
+    bool motor_slipping;            /* True if significant slip / vibration detected between cmd and real speed */
     uint32_t sample_count;          /* Telemetry sample count */
 } MotorTelemetry_t;
 
@@ -87,6 +91,7 @@ void Motor_ResetFault(void);
 void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct);
 void Motor_Update1ms(void);
 void Motor_PWM_UpdateISR(void);
+void Motor_OpticalCaptureISR(uint32_t capture_val);
 void Motor_GetTelemetry(MotorTelemetry_t* telem);
 const MotorControl_t* Motor_GetControl(void);
 

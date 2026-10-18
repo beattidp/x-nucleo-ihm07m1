@@ -121,14 +121,48 @@ void IHM07M1_Init(void) {
     /* Set default safe hardware trip current limit: 2.2 Amps (below L6230 2.8A peak limit) */
     IHM07M1_SetCurrentReference(2.2f);
 
-    /* 7. Configure Hall Sensor Inputs (PA15, PB3, PB10) */
+    /* 7. Configure Hall & Optical Tachometer Inputs */
+    /* PA15 (Hall 1) */
     GPIO_InitStruct.Pin = IHM07M1_HALL1_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(IHM07M1_HALL1_PORT, &GPIO_InitStruct);
 
-    GPIO_InitStruct.Pin = IHM07M1_HALL2_PIN | IHM07M1_HALL3_PIN;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    /* PB3 (Hall 2) */
+    GPIO_InitStruct.Pin = IHM07M1_HALL2_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL2_PORT, &GPIO_InitStruct);
+
+    /* PB10 (Optical Tachometer / Hall 3 on J3-Z+): TIM2_CH3 Input Capture */
+    GPIO_InitStruct.Pin = IHM07M1_HALL3_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = IHM07M1_HALL3_AF;
+    HAL_GPIO_Init(IHM07M1_HALL3_PORT, &GPIO_InitStruct);
+
+    /* Initialize TIM2 32-bit timebase for optical period measurement:
+     * Clock = 170 MHz. Prescaler = 169 -> 1.000 MHz (1.0 us tick resolution).
+     * Period = 0xFFFFFFFF (32-bit free-running, rollover = 4,294.9 seconds / 71.5 minutes) */
+    htim2.Instance = TIM2;
+    htim2.Init.Prescaler = 169;
+    htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+    htim2.Init.Period = 0xFFFFFFFFU;
+    htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    HAL_TIM_IC_Init(&htim2);
+
+    TIM_IC_InitTypeDef sICConfig = {0};
+    sICConfig.ICPolarity = TIM_ICPOLARITY_FALLING; /* Falling edge active (default high) */
+    sICConfig.ICSelection = TIM_ICSELECTION_DIRECTTI;
+    sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
+    sICConfig.ICFilter = 0x04; /* Glitch rejection filter against PWM transients */
+    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, TIM_CHANNEL_3);
+
+    HAL_NVIC_SetPriority(TIM2_IRQn, 3, 0);
+    HAL_NVIC_EnableIRQ(TIM2_IRQn);
+    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);
 
     /* 8. Configure ADC1 for Telemetry (VBUS, Temp, Potentiometer, Currents) */
     GPIO_InitStruct.Pin = IHM07M1_ADC_CURR_A_PIN | IHM07M1_ADC_VBUS_PIN;
@@ -257,6 +291,18 @@ void TIM1_UP_TIM16_IRQHandler(void) {
     }
     /* Read back SR to ensure write buffer drain before ISR exit */
     (void)htim1.Instance->SR;
+}
+
+/**
+ * @brief TIM2 Interrupt Handler (Optical photodetector capture on PB10 / TIM2_CH3)
+ */
+void TIM2_IRQHandler(void) {
+    if (__HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC3) != RESET) {
+        __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC3);
+        uint32_t capture = htim2.Instance->CCR3;
+        Motor_OpticalCaptureISR(capture);
+    }
+    (void)htim2.Instance->SR;
 }
 
 /**
