@@ -131,6 +131,11 @@ int main(void) {
                     case 'R':
                         Motor_ResetFault();
                         break;
+                    case 'l':
+                    case 'L':
+                    case 0x0C: /* Ctrl-L */
+                        Console_RequestFullRedraw();
+                        break;
                     case '\r':
                     case '\n':
                         if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {

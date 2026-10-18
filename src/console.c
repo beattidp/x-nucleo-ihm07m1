@@ -4,6 +4,8 @@
 #include "motor_characterization.h"
 #include "power_stage.h"
 #include <string.h>
+#include <stdlib.h>
+#include <math.h>
 
 UART_HandleTypeDef hlpuart1;
 
@@ -18,6 +20,14 @@ static volatile uint16_t s_rx_head = 0;
 static volatile uint16_t s_rx_tail = 0;
 
 static volatile bool s_console_ready = false;
+
+/* Active dashboard mode: 0 = uninitialized, 1 = main, 2 = characterization */
+static uint8_t s_active_dashboard_mode = 0;
+static bool s_force_full_redraw = true;
+
+void Console_RequestFullRedraw(void) {
+    s_force_full_redraw = true;
+}
 
 void console_init(void) {
     /* Enable GPIO and LPUART1 Clocks */
@@ -165,174 +175,399 @@ void LPUART1_IRQHandler(void) {
     }
 }
 
-/**
- * @brief Render fixed-position, non-scrolling ANSI terminal dashboard
- */
-void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t* ctrl, char heartbeat) {
-    uint32_t sec = HAL_GetTick() / 1000;
-    uint32_t hours = sec / 3600;
-    uint32_t minutes = (sec % 3600) / 60;
-    uint32_t seconds = sec % 60;
-    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
+/* ============================================================================
+ * STATIC BACKGROUND TEMPLATES (78 chars wide to prevent terminal line-wrap)
+ * ============================================================================ */
 
-    /* Reposition cursor at Row 1, Column 1 */
-    printf("\033[H");
-    printf("================================================================================\033[K\r\n");
-    printf("      STM32G474RE + %s -- BLDC MOTOR EVALUATION DASHBOARD        \033[K\r\n",
+static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* caps) {
+    printf("\033[?25l");      /* Hide terminal cursor */
+    printf("\033[2J\033[H");  /* Clear entire screen and home cursor */
+    printf("==============================================================================\r\n");
+    printf("   STM32G474RE + %-16s -- BLDC MOTOR EVALUATION DASHBOARD\r\n",
            caps ? caps->board_name : "POWER STAGE");
-    printf("================================================================================\033[K\r\n");
-    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 (Buffered) | CPU Clock: 170 MHz | PWM: 20 kHz\033[K\r\n");
-    printf(" Uptime : %02u:%02u:%02u                         | Sample: #%05u  [Heartbeat: %c]\033[K\r\n",
-           (unsigned int)hours, (unsigned int)minutes, (unsigned int)seconds, 
-           (unsigned int)telem->sample_count, heartbeat);
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" POWER STAGE TELEMETRY (%s - %s)\033[K\r\n",
+    printf("==============================================================================\r\n");
+    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 20 kHz\r\n");
+    printf(" Uptime :                                | \r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" POWER STAGE TELEMETRY (%s - %s)\r\n",
            caps ? caps->board_name : "UNKNOWN",
            caps ? caps->driver_ic : "UNKNOWN");
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" Bus Voltage (VBUS)         : \r\n");
+    printf(" Driver Board Temperature   : \r\n");
+    printf(" Speed Potentiometer (R42)  : \r\n");
+    printf(" Driver Status (%-5s DIAG) : \r\n", (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230");
+    printf(" Hall Sensor Signals (H321) : \r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" MOTOR DRIVE STATUS\r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" Drive State                : \r\n");
+    printf(" Control Strategy           : \r\n");
+    printf(" Active Motor Profile       : \r\n");
+    printf(" Target / Estimated Speed   : \r\n");
+    printf(" Commanded Torque Limit     : \r\n");
+    printf(" Active Modulated Duty      : \r\n");
+    printf(" Phase Currents (mA)        : \r\n");
+    printf(" Hardware Break Trip Limit  : \r\n");
+    printf("==============================================================================\r\n");
+    printf("  [SPACE] Run/Stop | [+/-] Torque | [P] Pot  | [D] Dir | [[/]] Duty | [R] Reset\r\n");
+    printf("  [O] Profile      | [C] Char     | [B] Brake| [L] Redraw\r\n");
+    printf("==============================================================================\r\n");
+}
 
-    /* Bus Voltage */
-    const char* vbus_status = (telem->vbus_v < 8.0f) ? "[LOW/DISCONNECTED]" : 
-                              (telem->vbus_v > 48.0f) ? "[OVERVOLTAGE]" : "[OK]";
-    printf(" Bus Voltage (VBUS)         : %5.2f V %s\033[K\r\n", telem->vbus_v, vbus_status);
+static void Console_RenderCharStaticTemplate(const PowerStageCapabilities_t* caps) {
+    printf("\033[?25l");      /* Hide terminal cursor */
+    printf("\033[2J\033[H");  /* Clear entire screen and home cursor */
+    printf("==============================================================================\r\n");
+    printf("   STM32G474RE + %-16s -- MOTOR CHARACTERIZATION ROUTINE\r\n",
+           caps ? caps->board_name : "POWER STAGE");
+    printf("==============================================================================\r\n");
+    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 20 kHz\r\n");
+    printf(" Status : \r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" TEST PROGRESS: [    ] [                    ]\r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" LIVE MEASUREMENTS\r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" Bus Voltage (VBUS)         : \r\n");
+    printf(" Peak Phase Current         : \r\n");
+    printf(" Board Temperature          : \r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" CHARACTERIZATION RESULTS\r\n");
+    printf("------------------------------------------------------------------------------\r\n");
+    printf(" Phase Resistance (Rs)      : \r\n");
+    printf(" Phase Balance (U/V/W)      : \r\n");
+    printf(" Stiction / Align Current   : \r\n");
+    printf(" Speed Constant (Kv)        : \r\n");
+    printf(" Recommended Base Duty      : \r\n");
+    printf(" Recommended V/F Slope      : \r\n");
+    printf("==============================================================================\r\n");
+    printf("                                                                              \r\n");
+    printf("==============================================================================\r\n");
+}
 
-    /* Driver Temperature */
-    printf(" Driver Board Temperature   : %4.1f deg C\033[K\r\n", telem->temp_c);
+/* ============================================================================
+ * SHADOW CACHE FOR DIFFERENTIAL PARTIAL REFRESH
+ * ============================================================================ */
 
-    /* Speed Potentiometer */
-    float pot_demanded_rpm = MOTOR_POT_MIN_RPM + (telem->pot_pct / 100.0f) * (MOTOR_POT_MAX_RPM - MOTOR_POT_MIN_RPM);
-    if (ctrl->pot_control_enabled) {
-        printf(" Speed Potentiometer (R42)  : %5.1f %% [ACTIVE -> Target %4d RPM]\033[K\r\n",
-               telem->pot_pct, (int)pot_demanded_rpm);
-    } else {
-        printf(" Speed Potentiometer (R42)  : %5.1f %% [MANUAL (Press 'P' to activate)]\033[K\r\n",
-               telem->pot_pct);
+typedef struct {
+    bool valid;
+    uint32_t last_sec;
+    float vbus_v;
+    float temp_c;
+    float pot_pct;
+    bool pot_ctrl;
+    bool fault_active;
+    uint8_t hall_state;
+    MotorState_t state;
+    MotorMode_t mode;
+    uint8_t prof_idx;
+    int target_speed_rpm;
+    int actual_speed_rpm;
+    int8_t direction;
+    float torque_limit_amps;
+    float active_duty_pct;
+    float duty_pct;
+    int ia_ma;
+    int ib_ma;
+    int ic_ma;
+    int ipk_ma;
+    float current_limit_amps;
+} MainShadow_t;
+
+static MainShadow_t s_main_shadow = {0};
+
+typedef struct {
+    bool valid;
+    char status_msg[64];
+    uint8_t progress;
+    float vbus_v;
+    float peak_curr;
+    float temp_c;
+    float r_phase;
+    float r_uv;
+    float r_vw;
+    float r_wu;
+    float unbalance;
+    float stiction_curr;
+    float min_duty;
+    float kv;
+    float ke;
+    float base_duty;
+    float vf_slope;
+    CharState_t state;
+} CharShadow_t;
+
+static CharShadow_t s_char_shadow = {0};
+
+/* ============================================================================
+ * DIFFERENTIAL PARTIAL REFRESH RENDERERS
+ * ============================================================================ */
+
+/**
+ * @brief Render differential partial refresh of the main motor evaluation dashboard
+ *        Only changes are written across UART using ANSI cursor positioning (\033[<row>;<col>H).
+ *        Typical 250ms refresh payload is ~120-180 bytes (<1.5 ms UART time, <6% link bandwidth).
+ */
+void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t* ctrl, char heartbeat) {
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
+
+    /* Check if full static background redraw is needed */
+    if (s_active_dashboard_mode != 1 || s_force_full_redraw) {
+        Console_RenderMainStaticTemplate(caps);
+        s_active_dashboard_mode = 1;
+        s_force_full_redraw = false;
+        s_main_shadow.valid = false;
     }
 
-    /* Driver Status & Fault */
-    const char* drv_name = (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230";
-    printf(" Driver Status (%s DIAG) : ", drv_name);
-    if (telem->fault_active) {
-        printf("\033[1;31m[FAULT / OVERCURRENT TRIPPED]\033[0m\033[K\r\n");
-    } else {
-        printf("\033[1;32m[READY / NORMAL]\033[0m\033[K\r\n");
+    /* 1. Master Sample Synchronization Anchor: Row 5, Col 44
+     *    Emitted every cycle to act as the clock/epoch delimiter for stream log parsers */
+    printf("\033[5;44HSample: #%07lu  [Heartbeat: %c]", (unsigned long)telem->sample_count, heartbeat);
+
+    /* 2. Uptime: Row 5, Col 11 */
+    uint32_t sec = HAL_GetTick() / 1000;
+    if (!s_main_shadow.valid || sec != s_main_shadow.last_sec) {
+        uint32_t hours = sec / 3600;
+        uint32_t minutes = (sec % 3600) / 60;
+        uint32_t seconds = sec % 60;
+        printf("\033[5;11H%02u:%02u:%02u", (unsigned int)hours, (unsigned int)minutes, (unsigned int)seconds);
+        s_main_shadow.last_sec = sec;
     }
 
-    /* Hall Sensor Signals / Sensorless state */
-    if (telem->hall_state == 7 || telem->hall_state == 0) {
-        printf(" Hall Sensor Signals (H321) : [SENSORLESS MOTOR / J4 DISCONNECTED]\033[K\r\n");
-    } else {
-        printf(" Hall Sensor Signals (H321) : State %d [H1=%d, H2=%d, H3=%d]\033[K\r\n",
-               telem->hall_state, (telem->hall_state & 1), ((telem->hall_state >> 1) & 1), ((telem->hall_state >> 2) & 1));
+    /* 3. Bus Voltage (VBUS): Row 9, Col 31 */
+    if (!s_main_shadow.valid || fabsf(telem->vbus_v - s_main_shadow.vbus_v) >= 0.05f) {
+        const char* vbus_status = (telem->vbus_v < 8.0f) ? "[LOW/DISCONNECTED]" : 
+                                  (telem->vbus_v > 48.0f) ? "[OVERVOLTAGE]     " : "[OK]              ";
+        printf("\033[9;31H%5.2f V %-18s", telem->vbus_v, vbus_status);
+        s_main_shadow.vbus_v = telem->vbus_v;
     }
 
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" MOTOR DRIVE STATUS\033[K\r\n");
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
+    /* 4. Driver Board Temperature: Row 10, Col 31 */
+    if (!s_main_shadow.valid || fabsf(telem->temp_c - s_main_shadow.temp_c) >= 0.2f) {
+        printf("\033[10;31H%4.1f deg C", telem->temp_c);
+        s_main_shadow.temp_c = telem->temp_c;
+    }
 
-    /* State and Mode */
-    const char* state_str = (ctrl->state == MOTOR_STATE_STOPPED) ? "STOPPED" :
-                            (ctrl->state == MOTOR_STATE_STARTING) ? "STARTING (ALIGN & RAMP)" :
-                            (ctrl->state == MOTOR_STATE_RUNNING) ? "RUNNING" :
-                            (ctrl->state == MOTOR_STATE_BRAKING) ? "ACTIVE BRAKING" :
-                            (ctrl->state == MOTOR_STATE_CHARACTERIZING) ? "CHARACTERIZING" : "FAULT";
+    /* 5. Speed Potentiometer (R42): Row 11, Col 31 */
+    if (!s_main_shadow.valid || 
+        fabsf(telem->pot_pct - s_main_shadow.pot_pct) >= 0.2f || 
+        ctrl->pot_control_enabled != s_main_shadow.pot_ctrl) {
+        float pot_demanded_rpm = MOTOR_POT_MIN_RPM + (telem->pot_pct / 100.0f) * (MOTOR_POT_MAX_RPM - MOTOR_POT_MIN_RPM);
+        if (ctrl->pot_control_enabled) {
+            printf("\033[11;31H%5.1f %% [ACTIVE -> Target %4d RPM]   ",
+                   telem->pot_pct, (int)pot_demanded_rpm);
+        } else {
+            printf("\033[11;31H%5.1f %% [MANUAL (Press 'P' to enable)]",
+                   telem->pot_pct);
+        }
+        s_main_shadow.pot_pct = telem->pot_pct;
+        s_main_shadow.pot_ctrl = ctrl->pot_control_enabled;
+    }
 
-    const char* mode_str = (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) ? "STAGE 1: OPEN-LOOP V/F (SENSORLESS)" :
-                           (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) ? "STAGE 2: 6-STEP VOLTAGE MODE" : "STAGE 3: 4-QUADRANT FOC";
+    /* 6. Driver Status (DIAG): Row 12, Col 31 */
+    if (!s_main_shadow.valid || telem->fault_active != s_main_shadow.fault_active) {
+        if (telem->fault_active) {
+            printf("\033[12;31H\033[1;31m[FAULT / OVERCURRENT TRIPPED]\033[0m");
+        } else {
+            printf("\033[12;31H\033[1;32m[READY / NORMAL]\033[0m             ");
+        }
+        s_main_shadow.fault_active = telem->fault_active;
+    }
 
-    printf(" Drive State                : %s\033[K\r\n", state_str);
-    printf(" Control Strategy           : %s\033[K\r\n", mode_str);
+    /* 7. Hall Sensor Signals: Row 13, Col 31 */
+    if (!s_main_shadow.valid || telem->hall_state != s_main_shadow.hall_state) {
+        if (telem->hall_state == 7 || telem->hall_state == 0) {
+            printf("\033[13;31H[SENSORLESS MOTOR / J4 DISCONNECTED] ");
+        } else {
+            printf("\033[13;31HState %d [H1=%d, H2=%d, H3=%d]           ",
+                   telem->hall_state, (telem->hall_state & 1), 
+                   ((telem->hall_state >> 1) & 1), ((telem->hall_state >> 2) & 1));
+        }
+        s_main_shadow.hall_state = telem->hall_state;
+    }
 
-    /* Active Profile */
-    const MotorProfile_t* active_prof = MotorProfiles_GetActive();
+    /* 8. Drive State: Row 17, Col 31 */
+    if (!s_main_shadow.valid || ctrl->state != s_main_shadow.state) {
+        const char* state_str = (ctrl->state == MOTOR_STATE_STOPPED) ? "STOPPED" :
+                                (ctrl->state == MOTOR_STATE_STARTING) ? "STARTING (ALIGN & RAMP)" :
+                                (ctrl->state == MOTOR_STATE_RUNNING) ? "RUNNING" :
+                                (ctrl->state == MOTOR_STATE_BRAKING) ? "ACTIVE BRAKING" :
+                                (ctrl->state == MOTOR_STATE_CHARACTERIZING) ? "CHARACTERIZING" : "FAULT";
+        printf("\033[17;31H%-35s", state_str);
+        s_main_shadow.state = ctrl->state;
+    }
+
+    /* 9. Control Strategy: Row 18, Col 31 */
+    if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode) {
+        const char* mode_str = (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) ? "STAGE 1: OPEN-LOOP V/F (SENSORLESS)" :
+                               (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) ? "STAGE 2: 6-STEP VOLTAGE MODE" : "STAGE 3: 4-QUADRANT FOC";
+        printf("\033[18;31H%-35s", mode_str);
+        s_main_shadow.mode = ctrl->mode;
+    }
+
+    /* 10. Active Motor Profile: Row 19, Col 31 */
     uint8_t prof_idx = MotorProfiles_GetActiveIndex() + 1;
-    uint8_t prof_total = MotorProfiles_GetCount();
-    printf(" Active Motor Profile       : [%u/%u] %s (%u PP, Max %4.2f A)\033[K\r\n",
-           prof_idx, prof_total, active_prof ? active_prof->name : "Generic",
-           ctrl->pole_pairs, ctrl->torque_limit_amps);
+    if (!s_main_shadow.valid || prof_idx != s_main_shadow.prof_idx) {
+        const MotorProfile_t* active_prof = MotorProfiles_GetActive();
+        uint8_t prof_total = MotorProfiles_GetCount();
+        printf("\033[19;31H[%u/%u] %s (%u PP, Max %4.2f A)%-6s",
+               prof_idx, prof_total, active_prof ? active_prof->name : "Generic",
+               ctrl->pole_pairs, ctrl->torque_limit_amps, "");
+        s_main_shadow.prof_idx = prof_idx;
+    }
 
-    /* Target & Actual Speed */
+    /* 11. Target & Actual Speed: Row 20, Col 31 */
     int spd_int = (int)ctrl->actual_speed_rpm;
     int tgt_int = (int)ctrl->target_speed_rpm;
+    if (!s_main_shadow.valid || spd_int != s_main_shadow.actual_speed_rpm || 
+        tgt_int != s_main_shadow.target_speed_rpm || ctrl->direction != s_main_shadow.direction) {
+        printf("\033[20;31HTarget %4d RPM | Est %4d RPM (%s)   ",
+               tgt_int, spd_int, (ctrl->direction > 0) ? "CW " : "CCW");
+        s_main_shadow.actual_speed_rpm = spd_int;
+        s_main_shadow.target_speed_rpm = tgt_int;
+        s_main_shadow.direction = ctrl->direction;
+    }
 
-    printf(" Target / Estimated Speed   : Target %4d RPM | Est %4d RPM (%s)\033[K\r\n",
-           tgt_int, spd_int, (ctrl->direction > 0) ? "CW" : "CCW");
-    printf(" Commanded Torque Limit     : %4.2f A (Software Regulated Ceiling)\033[K\r\n", ctrl->torque_limit_amps);
-    uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
-    printf(" Active Modulated Duty      : %4.1f %% (Base %4.1f %% | ARR = %u)\033[K\r\n",
-           ctrl->active_duty_pct, ctrl->duty_pct, arr);
+    /* 12. Commanded Torque Limit: Row 21, Col 31 */
+    if (!s_main_shadow.valid || fabsf(ctrl->torque_limit_amps - s_main_shadow.torque_limit_amps) >= 0.05f) {
+        printf("\033[21;31H%4.2f A (Software Regulated Ceiling)", ctrl->torque_limit_amps);
+        s_main_shadow.torque_limit_amps = ctrl->torque_limit_amps;
+    }
 
-    /* Phase Currents */
+    /* 13. Active Modulated Duty: Row 22, Col 31 */
+    if (!s_main_shadow.valid || fabsf(ctrl->active_duty_pct - s_main_shadow.active_duty_pct) >= 0.2f ||
+        fabsf(ctrl->duty_pct - s_main_shadow.duty_pct) >= 0.2f) {
+        uint16_t arr = (caps && caps->pwm_arr) ? caps->pwm_arr : 4249;
+        printf("\033[22;31H%4.1f %% (Base %4.1f %% | ARR = %u)  ",
+               ctrl->active_duty_pct, ctrl->duty_pct, arr);
+        s_main_shadow.active_duty_pct = ctrl->active_duty_pct;
+        s_main_shadow.duty_pct = ctrl->duty_pct;
+    }
+
+    /* 14. Phase Currents (mA): Row 23, Col 31 */
     int ia_ma = (int)(telem->current_a_amps * 1000.0f);
     int ib_ma = (int)(telem->current_b_amps * 1000.0f);
     int ic_ma = (int)(telem->current_c_amps * 1000.0f);
     int ipk_ma = (int)(telem->current_peak_amps * 1000.0f);
-    printf(" Phase Currents (mA)        : IA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]\033[K\r\n",
-           ia_ma, ib_ma, ic_ma, ipk_ma);
+    if (!s_main_shadow.valid || abs(ia_ma - s_main_shadow.ia_ma) >= 5 ||
+        abs(ib_ma - s_main_shadow.ib_ma) >= 5 || abs(ic_ma - s_main_shadow.ic_ma) >= 5 ||
+        abs(ipk_ma - s_main_shadow.ipk_ma) >= 5) {
+        printf("\033[23;31HIA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]",
+               ia_ma, ib_ma, ic_ma, ipk_ma);
+        s_main_shadow.ia_ma = ia_ma;
+        s_main_shadow.ib_ma = ib_ma;
+        s_main_shadow.ic_ma = ic_ma;
+        s_main_shadow.ipk_ma = ipk_ma;
+    }
 
-    printf(" Hardware Break Trip Limit  : %.2f A (%s OCD Break)\033[K\r\n",
-           ctrl->current_limit_amps, drv_name);
+    /* 15. Hardware Break Trip Limit: Row 24, Col 31 */
+    if (!s_main_shadow.valid || fabsf(ctrl->current_limit_amps - s_main_shadow.current_limit_amps) >= 0.05f) {
+        const char* drv_name = (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230";
+        printf("\033[24;31H%.2f A (%s OCD Break)          ",
+               ctrl->current_limit_amps, drv_name);
+        s_main_shadow.current_limit_amps = ctrl->current_limit_amps;
+    }
 
-    printf("================================================================================\033[K\r\n");
-    printf(" INTERACTIVE COMMANDS:                                                          \033[K\r\n");
-    printf("  [SPACE] Start/Stop Motor   |  [+/-] Inc/Dec Torque Limit|  [P] Toggle Pot Ctrl \033[K\r\n");
-    printf("  [D] Toggle Direction       |  [[/]] Inc/Dec Base Duty   |  [R] Reset Fault     \033[K\r\n");
-    printf("  [O] Next Motor Profile     |  [C] Characterize Motor    |  [B] Active Brake    \033[K\r\n");
-    printf("================================================================================\033[K\r\n");
+    /* Cleanly park cursor below dashboard */
+    printf("\033[29;1H");
+    s_main_shadow.valid = true;
 }
 
 /**
- * @brief Render dedicated Motor Characterization Dashboard
+ * @brief Render differential partial refresh of the motor characterization dashboard
  */
 void Console_RenderCharDashboard(const MotorTelemetry_t* telem, const MotorControl_t* ctrl, char heartbeat) {
     (void)ctrl;
+    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
     uint8_t progress = MotorChar_GetProgressPct();
     const CharResults_t* res = MotorChar_GetResults();
     CharState_t state = MotorChar_GetState();
-    const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
 
-    printf("\033[H");
-    printf("================================================================================\033[K\r\n");
-    printf("      STM32G474RE + %s -- MOTOR CHARACTERIZATION ROUTINE         \033[K\r\n",
-           caps ? caps->board_name : "POWER STAGE");
-    printf("================================================================================\033[K\r\n");
-    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 (Buffered) | CPU Clock: 170 MHz | PWM: 20 kHz\033[K\r\n");
-    printf(" Status : %-50s [Heartbeat: %c]\033[K\r\n", res->status_msg, heartbeat);
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" TEST PROGRESS: [%3u%%] [", progress);
-    int bars = progress / 5;
-    for (int i = 0; i < 20; i++) {
-        if (i < bars) printf("=");
-        else if (i == bars) printf(">");
-        else printf(" ");
+    /* Check if full static background redraw is needed */
+    if (s_active_dashboard_mode != 2 || s_force_full_redraw) {
+        Console_RenderCharStaticTemplate(caps);
+        s_active_dashboard_mode = 2;
+        s_force_full_redraw = false;
+        s_char_shadow.valid = false;
     }
-    printf("]\033[K\r\n");
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" LIVE MEASUREMENTS\033[K\r\n");
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" Bus Voltage (VBUS)         : %5.2f V\033[K\r\n", telem->vbus_v);
-    printf(" Peak Phase Current         : %5.3f A\033[K\r\n", telem->current_peak_amps);
-    printf(" Board Temperature          : %5.1f deg C\033[K\r\n", telem->temp_c);
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" CHARACTERIZATION RESULTS\033[K\r\n");
-    printf("--------------------------------------------------------------------------------\033[K\r\n");
-    printf(" Phase Resistance (Rs)      : %5.3f Ohm (Line-to-Line R_LL = %5.3f Ohm)\033[K\r\n",
-           res->r_phase_ohm, res->r_phase_ohm * 2.0f);
-    printf(" Phase Balance (U/V/W)      : U-V: %.2f | V-W: %.2f | W-U: %.2f Ohm [%.1f%% unbalance]\033[K\r\n",
-           res->r_uv_ohm, res->r_vw_ohm, res->r_wu_ohm, res->phase_unbalance_pct);
-    printf(" Stiction / Align Current   : %5.2f A (Min Duty: %.1f%%)\033[K\r\n",
-           res->stiction_current_amps, res->min_align_duty_pct);
-    printf(" Speed Constant (Kv)        : %5.0f RPM/V (Ke = %5.2f V/kRPM)\033[K\r\n",
-           res->kv_rating, res->ke_v_krpm);
-    printf(" Recommended Base Duty      : %5.1f %%\033[K\r\n", res->recommended_base_duty);
-    printf(" Recommended V/F Slope      : %5.1f %%\033[K\r\n", res->recommended_vf_slope);
-    printf("================================================================================\033[K\r\n");
-    if (state == CHAR_STATE_COMPLETE) {
-        printf("  \033[1;32m[ENTER] Save & Apply to Custom Profile\033[0m   |   \033[1;33m[ESC] Discard & Exit\033[0m\033[K\r\n");
-    } else if (state == CHAR_STATE_ABORTED) {
-        printf("  \033[1;31m[ESC] Exit Characterization Mode\033[0m\033[K\r\n");
-    } else {
-        printf("  \033[1;33m[ESC / X] Abort Characterization\033[0m\033[K\r\n");
+
+    /* 1. Status Message & Heartbeat: Row 5, Col 11 & Col 63 */
+    if (!s_char_shadow.valid || strcmp(res->status_msg, s_char_shadow.status_msg) != 0) {
+        printf("\033[5;11H%-50s", res->status_msg);
+        strncpy(s_char_shadow.status_msg, res->status_msg, sizeof(s_char_shadow.status_msg) - 1);
     }
-    printf("================================================================================\033[K\r\n");
+    printf("\033[5;63H[Heartbeat: %c]", heartbeat);
+
+    /* 2. Test Progress: Row 7, Col 17 */
+    if (!s_char_shadow.valid || progress != s_char_shadow.progress) {
+        printf("\033[7;17H[%3u%%] [", progress);
+        int bars = progress / 5;
+        for (int i = 0; i < 20; i++) {
+            if (i < bars) printf("=");
+            else if (i == bars) printf(">");
+            else printf(" ");
+        }
+        printf("]");
+        s_char_shadow.progress = progress;
+    }
+
+    /* 3. Live Measurements: Rows 11-13, Col 31 */
+    if (!s_char_shadow.valid || fabsf(telem->vbus_v - s_char_shadow.vbus_v) >= 0.05f) {
+        printf("\033[11;31H%5.2f V", telem->vbus_v);
+        s_char_shadow.vbus_v = telem->vbus_v;
+    }
+    if (!s_char_shadow.valid || fabsf(telem->current_peak_amps - s_char_shadow.peak_curr) >= 0.01f) {
+        printf("\033[12;31H%5.3f A", telem->current_peak_amps);
+        s_char_shadow.peak_curr = telem->current_peak_amps;
+    }
+    if (!s_char_shadow.valid || fabsf(telem->temp_c - s_char_shadow.temp_c) >= 0.2f) {
+        printf("\033[13;31H%5.1f deg C", telem->temp_c);
+        s_char_shadow.temp_c = telem->temp_c;
+    }
+
+    /* 4. Results: Rows 17-22, Col 31 */
+    if (!s_char_shadow.valid || fabsf(res->r_phase_ohm - s_char_shadow.r_phase) >= 0.001f) {
+        printf("\033[17;31H%5.3f Ohm (Line-to-Line R_LL = %5.3f Ohm)",
+               res->r_phase_ohm, res->r_phase_ohm * 2.0f);
+        s_char_shadow.r_phase = res->r_phase_ohm;
+    }
+    if (!s_char_shadow.valid || fabsf(res->phase_unbalance_pct - s_char_shadow.unbalance) >= 0.1f) {
+        printf("\033[18;31HU-V: %.2f | V-W: %.2f | W-U: %.2f Ohm [%.1f%% unbalance]",
+               res->r_uv_ohm, res->r_vw_ohm, res->r_wu_ohm, res->phase_unbalance_pct);
+        s_char_shadow.unbalance = res->phase_unbalance_pct;
+    }
+    if (!s_char_shadow.valid || fabsf(res->stiction_current_amps - s_char_shadow.stiction_curr) >= 0.01f) {
+        printf("\033[19;31H%5.2f A (Min Duty: %.1f%%)",
+               res->stiction_current_amps, res->min_align_duty_pct);
+        s_char_shadow.stiction_curr = res->stiction_current_amps;
+    }
+    if (!s_char_shadow.valid || fabsf(res->kv_rating - s_char_shadow.kv) >= 1.0f) {
+        printf("\033[20;31H%5.0f RPM/V (Ke = %5.2f V/kRPM)",
+               res->kv_rating, res->ke_v_krpm);
+        s_char_shadow.kv = res->kv_rating;
+    }
+    if (!s_char_shadow.valid || fabsf(res->recommended_base_duty - s_char_shadow.base_duty) >= 0.1f) {
+        printf("\033[21;31H%5.1f %%", res->recommended_base_duty);
+        s_char_shadow.base_duty = res->recommended_base_duty;
+    }
+    if (!s_char_shadow.valid || fabsf(res->recommended_vf_slope - s_char_shadow.vf_slope) >= 0.1f) {
+        printf("\033[22;31H%5.1f %%", res->recommended_vf_slope);
+        s_char_shadow.vf_slope = res->recommended_vf_slope;
+    }
+
+    /* 5. Key actions: Row 24 */
+    if (!s_char_shadow.valid || state != s_char_shadow.state) {
+        if (state == CHAR_STATE_COMPLETE) {
+            printf("\033[24;1H  \033[1;32m[ENTER] Save & Apply to Custom Profile\033[0m   |   \033[1;33m[ESC] Discard & Exit\033[0m\033[K");
+        } else if (state == CHAR_STATE_ABORTED) {
+            printf("\033[24;1H  \033[1;31m[ESC] Exit Characterization Mode\033[0m\033[K");
+        } else {
+            printf("\033[24;1H  \033[1;33m[ESC / X] Abort Characterization\033[0m\033[K");
+        }
+        s_char_shadow.state = state;
+    }
+
+    /* Park cursor cleanly below char dashboard */
+    printf("\033[26;1H");
+    s_char_shadow.valid = true;
 }

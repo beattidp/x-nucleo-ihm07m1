@@ -27,9 +27,10 @@ uint16_t console_tx_queue_len(void);
 int _write(int file, char *ptr, int len);
 int _read(int file, char *ptr, int len);
 
-/* Dashboard rendering */
+/* Dashboard rendering & partial refresh */
 void Console_RenderDashboard(const struct MotorTelemetry_s* telem, const struct MotorControl_s* ctrl, char heartbeat);
 void Console_RenderCharDashboard(const struct MotorTelemetry_s* telem, const struct MotorControl_s* ctrl, char heartbeat);
+void Console_RequestFullRedraw(void);
 
 #ifdef __cplusplus
 }
