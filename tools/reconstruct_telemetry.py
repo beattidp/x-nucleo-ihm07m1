@@ -24,15 +24,16 @@ COORD_MAP = {
     (11, 31): "pot",              # 5.7 % [ACTIVE -> Target  454 RPM]
     (12, 31): "driver_status",    # [READY / NORMAL] or [FAULT / OVERCURRENT TRIPPED]
     (13, 31): "hall",             # State 1 [H1=1, H2=0, H3=0] or [SENSORLESS ...]
-    (17, 31): "motor_state",      # STOPPED, STARTING, RUNNING, etc.
-    (18, 31): "control_mode",     # STAGE 1: OPEN-LOOP V/F (SENSORLESS)
-    (19, 31): "motor_profile",    # [2/4] Flywheel 5010-360KV (14 PP, Max 1.20 A)
-    (20, 31): "speed",            # Target  150 RPM | Est    0 RPM (CW )
-    (21, 31): "torque_limit",     # 1.20 A (Software Regulated Ceiling)
-    (22, 31): "duty",             # 10.0 % (Base  6.0 % | ARR = 4249)
-    (23, 31): "currents",         # IA=   1 mA | IB=   4 mA | IC=   3 mA [Pk=   4 mA]
-    (24, 31): "hw_trip_limit",    # 2.20 A (L6230 OCD Break)
-    (29, 1): "cursor_park",
+    (14, 31): "optical_tach",     # 1245 RPM (Revs:   482) [ROTATING - OK]
+    (18, 31): "motor_state",      # STOPPED, STARTING, RUNNING, etc.
+    (19, 31): "control_mode",     # STAGE 1: OPEN-LOOP V/F (SENSORLESS)
+    (20, 31): "motor_profile",    # [2/4] Flywheel 5010-360KV (14 PP, Max 1.20 A)
+    (21, 31): "speed",            # Target  150 | Est  150 | Real    0 RPM (CW )
+    (22, 31): "torque_limit",     # 1.20 A (Software Regulated Ceiling)
+    (23, 31): "duty",             # 10.0 % (Base  6.0 % | ARR = 4249)
+    (24, 31): "currents",         # IA=   1 mA | IB=   4 mA | IC=   3 mA [Pk=   4 mA]
+    (25, 31): "hw_trip_limit",    # 2.20 A (L6230 OCD Break)
+    (30, 1): "cursor_park",
 }
 
 # Regex to strip ANSI styling escapes (e.g. bold, green, red, clear line)
@@ -60,6 +61,10 @@ class TelemetryReconstructor:
             "profile_name": "",
             "target_rpm": None,
             "est_rpm": None,
+            "real_rpm": None,
+            "optical_rpm": 0,
+            "optical_revs": 0,
+            "optical_status": "",
             "direction": "CW",
             "torque_limit_amps": None,
             "active_duty_pct": None,
@@ -134,6 +139,18 @@ class TelemetryReconstructor:
         elif tag == "hall":
             self.state["hall_state"] = clean_text
 
+        elif tag == "optical_tach":
+            m = re.search(r"(-?\d+)\s+RPM\s+\(Revs:\s*(\d+)\)\s+(\[.+?\])", clean_text)
+            if m:
+                opt_rpm = int(m.group(1))
+                opt_revs = int(m.group(2))
+                opt_status = m.group(3).strip()
+                if prev.get("optical_status") and prev.get("optical_status") != opt_status:
+                    self._record_event("Optical Tach Status", opt_status)
+                self.state["optical_rpm"] = opt_rpm
+                self.state["optical_revs"] = opt_revs
+                self.state["optical_status"] = opt_status
+
         elif tag == "motor_state":
             st = clean_text.strip()
             if prev["motor_state"] != st:
@@ -149,16 +166,31 @@ class TelemetryReconstructor:
                 self._record_event("Motor Profile Selected", clean_text)
 
         elif tag == "speed":
-            m = re.search(r"Target\s+(-?\d+)\s+RPM\s+\|\s+Est\s+(-?\d+)\s+RPM(?:\s+\(([A-Z]+)\))?", clean_text)
+            # New format: Target 150 | Est 150 | Real   0 RPM (CW )
+            m = re.search(r"Target\s+(-?\d+)\s+\|\s+Est\s+(-?\d+)\s+\|\s+Real\s+(-?\d+)\s+RPM(?:\s+\(([A-Z]+)\))?", clean_text)
             if m:
                 tgt = int(m.group(1))
                 est = int(m.group(2))
-                direction = m.group(3) if m.group(3) else "CW"
+                real = int(m.group(3))
+                direction = m.group(4).strip() if m.group(4) else "CW"
                 if prev["target_rpm"] is not None and prev["target_rpm"] != tgt:
                     self._record_event("Target Speed Demand", f"{prev['target_rpm']} RPM -> {tgt} RPM")
                 self.state["target_rpm"] = tgt
                 self.state["est_rpm"] = est
+                self.state["real_rpm"] = real
                 self.state["direction"] = direction
+            else:
+                # Legacy format: Target 150 RPM | Est 0 RPM (CW )
+                m_leg = re.search(r"Target\s+(-?\d+)\s+RPM\s+\|\s+Est\s+(-?\d+)\s+RPM(?:\s+\(([A-Z]+)\))?", clean_text)
+                if m_leg:
+                    tgt = int(m_leg.group(1))
+                    est = int(m_leg.group(2))
+                    direction = m_leg.group(3).strip() if m_leg.group(3) else "CW"
+                    if prev["target_rpm"] is not None and prev["target_rpm"] != tgt:
+                        self._record_event("Target Speed Demand", f"{prev['target_rpm']} RPM -> {tgt} RPM")
+                    self.state["target_rpm"] = tgt
+                    self.state["est_rpm"] = est
+                    self.state["direction"] = direction
 
         elif tag == "torque_limit":
             m = re.search(r"([0-9.]+)\s*A", clean_text)
@@ -233,8 +265,8 @@ def export_csv(samples, csv_path):
         "sample_num", "uptime", "heartbeat", "vbus_v", "vbus_status",
         "temp_c", "pot_pct", "pot_target_rpm", "driver_fault",
         "motor_state", "control_mode", "profile_name",
-        "target_rpm", "est_rpm", "direction",
-        "torque_limit_amps", "active_duty_pct", "base_duty_pct",
+        "target_rpm", "est_rpm", "real_rpm", "optical_rpm", "optical_revs", "optical_status",
+        "direction", "torque_limit_amps", "active_duty_pct", "base_duty_pct",
         "ia_ma", "ib_ma", "ic_ma", "ipk_ma", "hw_limit_amps"
     ]
 
@@ -267,6 +299,8 @@ def print_summary(samples, events):
     temp_vals = [s["temp_c"] for s in samples if s.get("temp_c") is not None]
     peak_currs = [s["ipk_ma"] for s in samples if s.get("ipk_ma") is not None]
     est_rpms = [s["est_rpm"] for s in samples if s.get("est_rpm") is not None]
+    opt_rpms = [s["optical_rpm"] for s in samples if s.get("optical_rpm") is not None]
+    opt_revs = [s["optical_revs"] for s in samples if s.get("optical_revs") is not None]
 
     print(f" Total Synchronized Frames  : {total_samples}")
     print(f" Sample Range               : #{s_start} -> #{s_end} (Span: {duration_samples} samples)")
@@ -280,7 +314,14 @@ def print_summary(samples, events):
     if peak_currs:
         print(f" Peak Phase Current Range   : Min {min(peak_currs)} mA | Max {max(peak_currs)} mA | Avg {sum(peak_currs)/len(peak_currs):.1f} mA")
     if est_rpms:
-        print(f" Estimated Speed Range      : Min {min(est_rpms)} RPM | Max {max(est_rpms)} RPM")
+        print(f" Commanded/Est Speed Range  : Min {min(est_rpms)} RPM | Max {max(est_rpms)} RPM")
+    if opt_rpms:
+        max_opt = max(opt_rpms)
+        final_opt = opt_rpms[-1] if opt_rpms else 0
+        total_revs = (max(opt_revs) - min(opt_revs)) if opt_revs else 0
+        print(f" Optical Real Speed Range   : Max {max_opt} RPM | Final {final_opt} RPM | Revs Delta: {total_revs}")
+        if last.get("optical_status"):
+            print(f" Optical Tachometer Status  : {last.get('optical_status')}")
 
     print("-" * 80)
     print(f" DETECTED EVENTS TIMELINE ({len(events)} events):")

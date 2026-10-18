@@ -1,0 +1,9 @@
+FlyCat i-Rotor 5010-360KV
+KV: 360
+THRUST 6S -2800g 4s 2100g 3s 1600g apprx
+Configuration: 12N14P
+
+Precautions for developing motor control algorithms for a brushless motor with 12N14P configuration
+https://share.google/aimode/WSp9icBqn38HLzMae
+https://share.google/aimode/nhNxFQ9oXL6aiJPZX
+

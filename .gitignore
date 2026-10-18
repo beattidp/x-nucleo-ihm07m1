@@ -6,3 +6,5 @@
 *.bin
 *.hex
 tmp/
+__pycache__/
+*.pyc

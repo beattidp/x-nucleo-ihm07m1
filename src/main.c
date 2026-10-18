@@ -119,6 +119,30 @@ int main(void) {
                             MotorProfiles_Next();
                         }
                         break;
+                    case '1':
+                    case '2':
+                    case '3':
+                    case '4':
+                        if (ctrl->state == MOTOR_STATE_STOPPED) {
+                            MotorProfiles_Select((uint8_t)(ch - '1'));
+                        }
+                        break;
+                    case '>':
+                    case '.':
+                        Motor_SetPotControl(false);
+                        Motor_SetSpeed(ctrl->target_speed_rpm + 25.0f);
+                        break;
+                    case '<':
+                    case ',':
+                        Motor_SetPotControl(false);
+                        if (ctrl->target_speed_rpm > 50.0f) {
+                            Motor_SetSpeed(ctrl->target_speed_rpm - 25.0f);
+                        }
+                        break;
+                    case 'z':
+                    case 'Z':
+                        Motor_ResetOpticalCount();
+                        break;
                     case 'c':
                     case 'C':
                         Motor_StartCharacterization();
@@ -156,9 +180,11 @@ int main(void) {
         }
 
         /* Check B1 Button (PC13 - Active LOW) */
-        static uint8_t btn_prev = 1;
+        static uint8_t btn_prev = 0xFF;
         uint8_t btn_curr = (HAL_GPIO_ReadPin(B1_BUTTON_GPIO_PORT, B1_BUTTON_PIN) == GPIO_PIN_SET) ? 1 : 0;
-        if (btn_prev == 1 && btn_curr == 0) {
+        if (btn_prev == 0xFF) {
+            btn_prev = btn_curr;
+        } else if (btn_prev == 1 && btn_curr == 0) {
             /* Button pressed */
             const MotorControl_t* ctrl = Motor_GetControl();
             if (ctrl->state == MOTOR_STATE_STOPPED) {
@@ -166,8 +192,10 @@ int main(void) {
             } else {
                 Motor_Stop();
             }
+            btn_prev = btn_curr;
+        } else {
+            btn_prev = btn_curr;
         }
-        btn_prev = btn_curr;
 
         /* Heartbeat LED Toggle (500 ms) */
         if (now - last_led_tick >= 500) {

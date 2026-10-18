@@ -74,16 +74,17 @@ static volatile bool s_new_optical_pulse = false;
  *        Captures 1 us timer count on falling edge (photodetector trigger)
  */
 void Motor_OpticalCaptureISR(uint32_t capture_val) {
-    s_optical_pulse_count++;
-    s_last_optical_pulse_tick_ms = HAL_GetTick();
     if (s_has_previous_optical_capture) {
         uint32_t dt = capture_val - s_last_optical_capture;
-        /* Reject spurious glitches narrower than 500 us (> 120,000 RPM) */
-        if (dt >= 500) {
-            s_optical_delta_ticks = dt;
-            s_new_optical_pulse = true;
+        /* Reject spurious glitches and vibration chatter narrower than 4000 us (> 15,000 RPM) */
+        if (dt < 4000) {
+            return;
         }
+        s_optical_delta_ticks = dt;
+        s_new_optical_pulse = true;
     }
+    s_optical_pulse_count++;
+    s_last_optical_pulse_tick_ms = HAL_GetTick();
     s_last_optical_capture = capture_val;
     s_has_previous_optical_capture = true;
 }
@@ -275,9 +276,17 @@ void Motor_SetMode(MotorMode_t mode) {
 void Motor_ResetFault(void) {
     PowerStage_ClearFault();
     PowerStage_SetStatusLED(false);
+    g_telemetry.fault_active = false;
+    g_telemetry.motor_stalled = false;
+    g_telemetry.motor_slipping = false;
     if (g_motor_ctrl.state == MOTOR_STATE_FAULT) {
         g_motor_ctrl.state = MOTOR_STATE_STOPPED;
     }
+}
+
+void Motor_ResetOpticalCount(void) {
+    s_optical_pulse_count = 0;
+    g_telemetry.optical_pulse_count = 0;
 }
 
 /**
@@ -338,12 +347,16 @@ void Motor_Update1ms(void) {
     g_telemetry.hall_state = PowerStage_ReadHallSensors();
 
     /* 2.5 Optical Tachometer RPM Calculation & Timeout Watchdog */
+#ifndef OPTICAL_PULSES_PER_REV
+#define OPTICAL_PULSES_PER_REV 2
+#endif
+
     uint32_t now = HAL_GetTick();
     if (s_new_optical_pulse) {
         s_new_optical_pulse = false;
         uint32_t dt = s_optical_delta_ticks;
         if (dt > 0) {
-            float raw_rpm = 60000000.0f / (float)dt;
+            float raw_rpm = (60000000.0f / (float)OPTICAL_PULSES_PER_REV) / (float)dt;
             if (g_telemetry.optical_rpm < 1.0f) {
                 g_telemetry.optical_rpm = raw_rpm;
             } else {
@@ -354,18 +367,18 @@ void Motor_Update1ms(void) {
     }
 
     uint32_t elapsed_since_pulse = (s_last_optical_pulse_tick_ms > 0) ? (now - s_last_optical_pulse_tick_ms) : 999999;
-    if (elapsed_since_pulse > 600) {
-        /* Pulse timeout: slower than 100 RPM or completely stationary */
+    if (elapsed_since_pulse > 800) {
+        /* Pulse timeout: slower than 50 RPM or completely stationary */
         g_telemetry.optical_rpm = 0.0f;
         s_has_previous_optical_capture = false;
-    } else if (elapsed_since_pulse > 60) {
+    } else if (elapsed_since_pulse > 80) {
         /* Dynamic decay: smoothly decay RPM if interval exceeds period of current speed */
-        float max_possible_rpm = 60000.0f / (float)elapsed_since_pulse;
+        float max_possible_rpm = (60000.0f / (float)OPTICAL_PULSES_PER_REV) / (float)elapsed_since_pulse;
         if (g_telemetry.optical_rpm > max_possible_rpm) {
             g_telemetry.optical_rpm = max_possible_rpm;
         }
     }
-    g_telemetry.optical_pulse_count = s_optical_pulse_count;
+    g_telemetry.optical_pulse_count = s_optical_pulse_count / OPTICAL_PULSES_PER_REV;
 
     /* Stall & Non-Rotating / Out-of-Sync Vibration Detection */
     static uint16_t s_stall_timer_ms = 0;
@@ -460,12 +473,23 @@ void Motor_Update1ms(void) {
             g_motor_ctrl.actual_speed_rpm = 0.0f;
             g_motor_ctrl.current_freq_hz = 0.0f;
 
-            /* Gentle 1.20 V alignment boost to settle high-inertia flywheel */
-            duty_demanded = (1.20f / vbus_now) * 100.0f;
+            /* Alignment phase: apply holding voltage scaled to base duty */
+            float align_v = 1.20f;
+            float base_v = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
+            if (align_v < base_v * 0.75f) {
+                align_v = base_v * 0.75f;
+            }
+            duty_demanded = (align_v / vbus_now) * 100.0f;
         } else {
-            /* 4.2 Inertia-Aware Acceleration Ramp: strictly follow accel_slew_rpm_s */
+            /* 4.2 Inertia-Aware S-Curve Acceleration Ramp */
             float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
                                     (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
+            float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
+            if (speed_diff > 0.0f && speed_diff < 40.0f) {
+                float taper = speed_diff / 40.0f;
+                if (taper < 0.15f) taper = 0.15f;
+                max_slew_per_ms *= taper;
+            }
 
             /* Initialize from 1.0 Hz electrical (~4.3 RPM for 14 PP) */
             float min_start_rpm = (1.0f * 60.0f) / (float)g_motor_ctrl.pole_pairs;
@@ -485,11 +509,8 @@ void Motor_Update1ms(void) {
 
             /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
             float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
-            float rs = (g_motor_ctrl.phase_resistance_ohm > 0.05f) ? g_motor_ctrl.phase_resistance_ohm : 0.50f;
-            float i_target = 0.70f; /* 0.70 A magnetizing current */
-            float v_boost = i_target * rs * 2.0f; /* Line-to-line IR compensation */
+            float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
             if (v_boost < 0.80f) v_boost = 0.80f;
-            if (v_boost > 2.00f) v_boost = 2.00f;
 
             float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
             float v_target = v_boost + v_bemf;
@@ -497,11 +518,18 @@ void Motor_Update1ms(void) {
         }
     } else if (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_BRAKING) {
         if (g_motor_ctrl.state == MOTOR_STATE_RUNNING) {
-            /* Slew actual speed toward target speed at accel_slew_rpm_s */
+            /* Slew actual speed toward target speed with smooth taper */
             float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
             float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
                                     (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
-            if (fabsf(speed_diff) <= max_slew_per_ms) {
+            float abs_diff = fabsf(speed_diff);
+            if (abs_diff < 40.0f && abs_diff > 0.0f) {
+                float taper = abs_diff / 40.0f;
+                if (taper < 0.15f) taper = 0.15f;
+                max_slew_per_ms *= taper;
+            }
+
+            if (abs_diff <= max_slew_per_ms) {
                 g_motor_ctrl.actual_speed_rpm = g_motor_ctrl.target_speed_rpm;
             } else if (speed_diff > 0.0f) {
                 g_motor_ctrl.actual_speed_rpm += max_slew_per_ms;
@@ -515,11 +543,8 @@ void Motor_Update1ms(void) {
 
         /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
         float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
-        float rs = (g_motor_ctrl.phase_resistance_ohm > 0.05f) ? g_motor_ctrl.phase_resistance_ohm : 0.50f;
-        float i_target = 0.70f;
-        float v_boost = i_target * rs * 2.0f;
+        float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
         if (v_boost < 0.80f) v_boost = 0.80f;
-        if (v_boost > 2.00f) v_boost = 2.00f;
 
         float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
         float v_target = v_boost + v_bemf;

@@ -214,9 +214,8 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Active Modulated Duty      : \r\n");
     printf(" Phase Currents (mA)        : \r\n");
     printf(" Hardware Break Trip Limit  : \r\n");
-    printf("==============================================================================\r\n");
-    printf("  [SPACE] Run/Stop | [+/-] Torque | [P] Pot  | [D] Dir | [[/]] Duty | [R] Reset\r\n");
-    printf("  [O] Profile      | [C] Char     | [B] Brake| [L] Redraw\r\n");
+    printf("  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  \r\n");
+    printf("  [[ / ]] Duty     | [D] Direction | [B] Brake     | [Z] Zero Rev | [R] Reset\r\n");
     printf("==============================================================================\r\n");
 }
 

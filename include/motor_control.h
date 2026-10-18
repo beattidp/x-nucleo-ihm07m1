@@ -88,6 +88,7 @@ void Motor_SetMode(MotorMode_t mode);
 void Motor_TogglePotControl(void);
 void Motor_SetPotControl(bool enable);
 void Motor_ResetFault(void);
+void Motor_ResetOpticalCount(void);
 void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct);
 void Motor_Update1ms(void);
 void Motor_PWM_UpdateISR(void);
