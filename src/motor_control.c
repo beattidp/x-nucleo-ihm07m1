@@ -585,7 +585,7 @@ void Motor_Update1ms(void) {
 
     /* 4.4 Duty Cycle Clamping & Scale Computation */
     if (duty_demanded < 2.0f) duty_demanded = 2.0f;
-    if (duty_demanded > 75.0f) duty_demanded = 75.0f;
+    if (duty_demanded > 92.0f) duty_demanded = 92.0f;
     g_motor_ctrl.active_duty_pct = duty_demanded;
 
     /* Update parameters for the ultrafast 20 kHz TIM1 Update ISR */

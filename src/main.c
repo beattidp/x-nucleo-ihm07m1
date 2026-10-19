@@ -73,7 +73,31 @@ int main(void) {
                     }
                 }
             } else {
+                static bool s_in_speed_entry = false;
+                static uint32_t s_speed_entry_val = 0;
+
+                if (s_in_speed_entry) {
+                    if (ch >= '0' && ch <= '9') {
+                        s_speed_entry_val = s_speed_entry_val * 10 + (uint32_t)(ch - '0');
+                        continue;
+                    } else if (ch == '\r' || ch == '\n' || ch == ' ') {
+                        if (s_speed_entry_val >= 50 && s_speed_entry_val <= 10000) {
+                            Motor_SetPotControl(false);
+                            Motor_SetSpeed((float)s_speed_entry_val);
+                        }
+                        s_in_speed_entry = false;
+                        continue;
+                    } else {
+                        s_in_speed_entry = false;
+                    }
+                }
+
                 switch (ch) {
+                    case 's':
+                    case 'S':
+                        s_in_speed_entry = true;
+                        s_speed_entry_val = 0;
+                        break;
                     case ' ':
                         if (ctrl->state == MOTOR_STATE_STOPPED) {
                             Motor_Start();

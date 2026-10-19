@@ -16,3 +16,23 @@ the WANPTEK WPS3010B.
 It is also possible to add programmatic control of the voltage
 via USB by using a different available power supply,
 the HANMATEK HM310T.
+
+Theoretical no-load RPM per volt is 360.
+assume target functional RPM at 70% of maximum.
+
+at 12 volts, 4320 RPM maximum, target: 3024 rpm
+  144, 432, 864, 1440, 2160, 3024
+at 16 volts, 5760 RPM maximum, target: 4032 rpm
+at 24 volts, 8640 RPM maximum, target: 6048 rpm
+
+x = [ i for i in range(0,7)]
+Max = [3024, 4032, 6048]
+# [ [int(M * sum(x[0:i]) / sum(x)) for i in range(1,len(x))] for M in Max]
+for M in Max:
+  values = [int(M * sum(x[0:i]) / sum(x)) for i in range(1,len(x))]
+  values.append(M)
+  print(values[1:])
+
+12 volt targets: [144, 432, 864, 1440, 2160, 3024]
+16 volt targets: [192, 576, 1152, 1920, 2880, 4032]
+24 volt targets: [288, 864, 1728, 2880, 4320, 6048]

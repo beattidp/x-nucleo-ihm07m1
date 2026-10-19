@@ -43,9 +43,16 @@ def ensure_stopped(session_id):
         time.sleep(1.0)
 
 
-def adjust_target_rpm(session_id, target_rpm):
-    """Adjusts target RPM via snapshot check and '<' / '>' keystrokes."""
-    snapshot_file = "/tmp/motor_speed_snap.txt"
+VOLTAGE_LADDERS = {
+    12: [144, 432, 864, 1440, 2160, 3024],
+    16: [192, 576, 1152, 1920, 2880, 4032],
+    24: [288, 864, 1728, 2880, 4320, 6048]
+}
+
+
+def get_bus_voltage(session_id):
+    """Reads live bus voltage from console snapshot."""
+    snapshot_file = "/tmp/motor_vbus_snap.txt"
     capture_snapshot(session_id, snapshot_file)
     with open(snapshot_file, "r", encoding="utf-8", errors="replace") as f:
         snap = f.read()
@@ -54,20 +61,35 @@ def adjust_target_rpm(session_id, target_rpm):
     except OSError:
         pass
 
-    m = re.search(r"Target\s+(\d+)\s+\|\s+Est", snap)
+    m = re.search(r"Bus Voltage \(VBUS\)\s*:\s*([0-9.]+)\s*V", snap)
     if m:
-        curr_rpm = int(m.group(1))
-        delta = target_rpm - curr_rpm
-        steps = int(round(delta / 25.0))
-        if steps > 0:
-            for _ in range(steps):
-                send_keystroke(session_id, ">")
-                time.sleep(0.04)
-        elif steps < 0:
-            for _ in range(abs(steps)):
-                send_keystroke(session_id, "<")
-                time.sleep(0.04)
-        print(f"Adjusted target RPM from {curr_rpm} to ~{target_rpm} ({steps} steps of 25 RPM).")
+        return float(m.group(1))
+    return 12.0
+
+
+def resolve_voltage_targets(vbus_v, bidirectional=True):
+    """Selects speed target ladder based on measured bus voltage."""
+    if vbus_v < 14.0:
+        nom_v = 12
+    elif vbus_v < 20.0:
+        nom_v = 16
+    else:
+        nom_v = 24
+
+    targets = VOLTAGE_LADDERS[nom_v]
+    if bidirectional:
+        # Accelerate up through all targets, then decelerate back down to initial target
+        full_ladder = targets + targets[-2::-1]
+    else:
+        full_ladder = list(targets)
+    return nom_v, full_ladder
+
+
+def adjust_target_rpm(session_id, target_rpm):
+    """Directly sets target RPM via console 's<RPM>\r' command."""
+    send_keystroke(session_id, f"s{target_rpm}\r")
+    time.sleep(0.1)
+    print(f"Set target RPM directly to {target_rpm} RPM.")
 
 
 def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
@@ -173,21 +195,32 @@ def analyze_test_run(samples, events):
         outcome = "PARTIAL_OR_UNSTABLE"
         print(f"  [?] PARTIAL ROTATION / SLIP: Detected {total_revs} revs, max {max_opt_rpm} RPM.")
 
-    # Multi-stage speed step analysis if multiple target RPMs were commanded
-    unique_targets = []
+    # Identify chronological continuous segments of target_rpm (distinguishes accel vs decel)
+    segments = []
+    curr_t = None
+    curr_seg = []
     for s in samples:
         t = s.get("target_rpm")
-        if t is not None and t not in unique_targets:
-            unique_targets.append(t)
+        if t is None or s.get("motor_state") not in ("STARTING (ALIGN & RAMP)", "RUNNING"):
+            continue
+        if t != curr_t:
+            if curr_seg:
+                segments.append((curr_t, curr_seg))
+            curr_t = t
+            curr_seg = [s]
+        else:
+            curr_seg.append(s)
+    if curr_seg:
+        segments.append((curr_t, curr_seg))
 
-    if len(unique_targets) > 1:
-        print("-" * 80)
+    if len(segments) > 1:
+        print("-" * 90)
         print(" MULTI-STAGE SPEED STEP RESPONSE & CURRENT CONSUMPTION BREAKDOWN:")
-        print("-" * 80)
-        print(f" {'Target':<10} | {'Est RPM':<10} | {'Real RPM (Avg/Max)':<20} | {'Phase Peak (Avg/Max)':<22} | {'Duty %':<8} | {'Status'}")
-        print("-" * 80)
-        for t in unique_targets:
-            t_samples = [s for s in samples if s.get("target_rpm") == t and s.get("motor_state") in ("STARTING (ALIGN & RAMP)", "RUNNING")]
+        print("-" * 90)
+        print(f" {'Step':<5} | {'Phase':<7} | {'Target':<7} | {'Est End':<8} | {'Real Optical (Avg/End)':<22} | {'Phase Peak (Avg/Max)':<20} | {'Duty %':<7} | {'Status'}")
+        print("-" * 90)
+        max_seen = 0
+        for idx, (t, t_samples) in enumerate(segments, start=1):
             if not t_samples:
                 continue
             r_rpms = [s["optical_rpm"] if s.get("optical_rpm") is not None else s.get("real_rpm", 0) for s in t_samples]
@@ -197,16 +230,24 @@ def analyze_test_run(samples, events):
             statuses = [s.get("optical_status", "") for s in t_samples]
 
             avg_r = sum(r_rpms) / len(r_rpms) if r_rpms else 0
-            max_r = max(r_rpms) if r_rpms else 0
-            avg_e = sum(e_rpms) / len(e_rpms) if e_rpms else 0
+            end_r = r_rpms[-1] if r_rpms else 0
+            end_e = e_rpms[-1] if e_rpms else 0
             avg_p = sum(p_currs) / len(p_currs) if p_currs else 0
             max_p = max(p_currs) if p_currs else 0
             avg_d = sum(duties) / len(duties) if duties else 0
             has_slip = any("SLIP" in st or "VIB" in st for st in statuses)
             has_stall = any("STALL" in st or "LOCK" in st for st in statuses)
-            cond = "SLIP/VIBRATE" if has_slip else ("STALLED" if has_stall else "IN SYNC")
+            cond = "SLIP/VIB" if has_slip else ("STALLED" if has_stall else "IN SYNC")
 
-            print(f" {t:<10} | {avg_e:<10.1f} | {f'{avg_r:.0f} / {max_r}':<20} | {f'{avg_p:.0f} mA / {max_p} mA':<22} | {avg_d:<8.1f} | {cond}")
+            if t > max_seen:
+                phase = "ACCEL"
+                max_seen = t
+            elif t == max_seen:
+                phase = "PEAK"
+            else:
+                phase = "DECEL"
+
+            print(f" {idx:<5} | {phase:<7} | {t:<7} | {end_e:<8.0f} | {f'{avg_r:.0f} / {end_r}':<22} | {f'{avg_p:.0f} mA / {max_p} mA':<20} | {avg_d:<7.1f} | {cond}")
 
     print("=" * 80)
     return outcome
@@ -217,7 +258,9 @@ def main():
     parser.add_argument("--session", "-s", help="Screen session ID (default: auto-detect)")
     parser.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4], help="Motor profile (1-4)")
     parser.add_argument("--rpm", type=int, help="Target motor RPM")
-    parser.add_argument("--speed-steps", help="Comma-separated speed steps (e.g. '300,700,1100')")
+    parser.add_argument("--speed-steps", help="Comma-separated speed steps (e.g. '300,700,1100' or 'auto')")
+    parser.add_argument("--voltage-targets", action="store_true", help="Auto-detect bus voltage and use voltage-dependent speed targets with decel")
+    parser.add_argument("--no-decel", action="store_true", help="Disable deceleration ladder in voltage targets")
     parser.add_argument("--step-duration", type=float, default=12.0, help="Duration per speed step in seconds (default: 12.0s)")
     parser.add_argument("--duty-adjust", type=int, default=0, help="Duty adjustment steps (+ for ], - for [)")
     parser.add_argument("--duration", "-d", type=float, default=6.0, help="Run duration in seconds (default: 6.0s)")
@@ -231,7 +274,12 @@ def main():
     csv_file = os.path.join(args.output_dir, f"run_{ts}.csv")
 
     speed_steps = None
-    if args.speed_steps:
+    if args.voltage_targets or args.speed_steps == "auto":
+        vbus = get_bus_voltage(session_id)
+        nom_v, speed_steps = resolve_voltage_targets(vbus, bidirectional=not args.no_decel)
+        print(f"Detected Bus Voltage: {vbus:.2f} V -> Selected {nom_v}V Speed Ladder: {speed_steps}")
+        init_rpm = speed_steps[0]
+    elif args.speed_steps:
         speed_steps = [int(x.strip()) for x in args.speed_steps.split(",")]
         init_rpm = speed_steps[0]
     else:
