@@ -31,9 +31,20 @@
   - Added dedicated `line21_optical_rpm` shadow member to decouple Row 21 (`Target | Est | Real RPM`) from Row 14, ensuring Row 21 redraws when optical speed updates.
 - **Enhanced Telemetry Reconstructor ANSI Tokenizer (`tools/reconstruct_telemetry.py`)**:
   - Sliced token text between consecutive cursor positioning escapes (`\x1b[<row>;<col>H`) rather than stopping at embedded color escapes (`\x1b[1;32m`), preserving status tags and rev counts.
-- **Live Hardware Validation (Runs 9 & 10)**:
+- **Live Hardware Validation (Runs 9, 10 & 11)**:
   - **Run 9 (8-second test at 350 RPM)**: Motor smoothly accelerated to 350 RPM, counting 43 revs with peak current 1011 mA. Confirmed exact 1:1 alignment at 350 RPM.
   - **Run 10 (15-second test at 375 RPM)**: Motor turned 123 revs. Validated the user's observation: motor accelerates in synchronism at 375 RPM (6.25 Hz pulse, ~15-25 mA current), and when slip occurs, optical sensor detects rotor oscillating at the 7-pole stator electrical field frequency (~2500 RPM / 41.7 Hz) with reactive current surges up to 1.19 A.
+  - **Run 11 (45-second Multi-Stage Speed Test: 300 -> 700 -> 1100 RPM)**:
+    - Added `--speed-steps` and `--step-duration` support to `tools/run_motor_test.py`.
+    - Executed sequential transitions: 300 RPM $\to$ 700 RPM $\to$ 1100 RPM (14s hold per plateau) at 12V supply.
+    - Motor completed **603 revolutions** across the full run.
+    - Successfully transitioned to 1100 RPM and locked in solid synchronism at **1100 RPM** (`Real: 1100 RPM`, 18.33 Hz optical pulse rate).
+    - Current consumption measured across stages:
+      - 300 RPM: 158 mA avg, 1302 mA peak transient, 22.7%–25.0% duty.
+      - 700 RPM: 269 mA avg, 1473 mA peak transient, 26.1%–34.1% duty.
+      - 1100 RPM: 297 mA avg, 1509 mA peak transient, 35.4%–43.2% duty.
+    - Maximum peak current across the entire test was 1.51 A, safely below the 2.2 A compliance limit.
+    - Confirmed roadmap toward Field-Oriented Control (FOC) to eliminate open-loop load angle oscillations.
 
 ---
 

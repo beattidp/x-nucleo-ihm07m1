@@ -7,3 +7,12 @@ Precautions for developing motor control algorithms for a brushless motor with 1
 https://share.google/aimode/WSp9icBqn38HLzMae
 https://share.google/aimode/nhNxFQ9oXL6aiJPZX
 
+
+Currently using a power supply with no remote control,
+the WANPTEK WPS3010B.
+
+
+
+It is also possible to add programmatic control of the voltage
+via USB by using a different available power supply,
+the HANMATEK HM310T.

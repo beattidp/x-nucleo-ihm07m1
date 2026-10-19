@@ -146,10 +146,53 @@ python3 tools/run_motor_test.py --profile 2 --rpm 250 --duty-adjust 6 --duration
 ### Script Execution Sequence:
 1. Inspects live dashboard snapshot to guarantee motor is `STOPPED`.
 2. Sends profile hotkey (`'1'`..`'4'`).
-3. Sends `'>'` or `'<'` steps to configure target RPM.
+3. Sends `'>'` or `'<'` steps to configure target RPM (or sequences through `--speed-steps`).
 4. Applies `'['` or `']'` duty adjustments.
 5. Zeros optical revolution counter (`'z'`).
 6. Starts raw ANSI stream capture and forces full template redraw (`'l'`).
-7. Sends `' '` (SPACE) to start motor and logs for `--duration` seconds.
+7. Sends `' '` (SPACE) to start motor and logs for configured duration/steps.
 8. Sends `' '` (SPACE) to stop motor.
 9. Tokenizes stream with `TelemetryReconstructor`, exports CSV time-series, and prints diagnostic pass/fail report.
+
+---
+
+## 6. Multi-Stage Speed Step Testing & Current Profile (300 $\to$ 700 $\to$ 1100 RPM)
+
+To verify the motor's dynamic response and current consumption across wide operational speed steps, an automated multi-stage test was executed:
+```bash
+python3 tools/run_motor_test.py --profile 2 --speed-steps 300,700,1100 --step-duration 14.0 --duty-adjust 6
+```
+
+### 6.1 Empirical Speed Step & Current Results (`test_runs/run_20261018_200406.csv`)
+- **Supply Voltage**: 12.13 V VBUS (Hardware current compliance set to 2.2 A).
+- **Total Test Duration**: 45 seconds (184 synchronized telemetry frames).
+- **Total Mechanical Revolutions**: **603 revs**.
+
+| Operational Stage | Target Speed | Est Speed (Arrival) | Real Optical Speed | Revolutions in Stage | Phase Current (Pk Avg / Pk Max) | Average Phase Currents | Modulated Duty | Synchronism State |
+|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---|
+| **Stage 1 (300 RPM)** | 300 RPM | 300 RPM | 300 – 368 RPM | 97 revs | 158 mA / 1302 mA | IA=3 mA, IB=158 mA, IC=1 mA | 22.7% – 25.0% | Steady sync with transient inertia oscillation |
+| **Stage 2 (700 RPM)** | 700 RPM | 700 RPM | 698 – 739 RPM | 227 revs | 269 mA / 1473 mA | IA=3 mA, IB=268 mA, IC=2 mA | 26.1% – 34.1% | Steady sync; 4.7 kHz slip vibration rejected |
+| **Stage 3 (1100 RPM)** | 1100 RPM | 1100 RPM | **1100 RPM** | 235 revs | 297 mA / 1509 mA | IA=2 mA, IB=297 mA, IC=1 mA | 35.4% – 43.2% | **Solid Sync Lock**: 15 consecutive samples locked at 1100 RPM |
+
+### 6.2 Key Observations:
+1. **Successful Multi-Step Speed Tracking**:
+   - The motor accelerated from a standstill to 300 RPM, stepped up to 700 RPM, and stepped up to 1100 RPM without stalling or tripping the power supply.
+   - At 1100 RPM, the motor locked solidly at **1100 RPM** ($18.33\text{ Hz}$ optical pulse rate), with nominal phase current dropping to 6–17 mA during steady rotation.
+2. **Current Compliance**:
+   - The absolute peak phase current across all transitions was **1.51 A** ($1509\text{ mA}$), comfortably below the 2.2 A hardware break trip and the bench supply limit.
+3. **Open-Loop Slip Mechanism**:
+   - Open-loop V/F drive lacks active phase angle regulation. During speed steps, flywheel inertia causes the load angle $\delta$ to oscillate, producing reactive current pulses up to 1.3–1.5 A and optical vibration spikes (~2500 RPM at 350 RPM target, ~4700 RPM at 700 RPM target).
+
+---
+
+## 7. Strategic Transition to Field-Oriented Control (FOC)
+
+The experimental results definitively highlight why **Stage 3: Field-Oriented Control (FOC)** is the intended destination for this motor fixture:
+1. **Decoupled Flux & Torque ($I_d = 0$, $I_q = \tau$)**:
+   - Rather than driving a rigid rotating voltage vector that the rotor must follow (open-loop V/F), FOC directly regulates stator current in the rotor's d-q reference frame.
+   - Eliminates load-angle oscillation, slip, and electrical-frequency vibration.
+2. **Torque Ripple & Current Minimization**:
+   - In steady state, FOC only supplies the exact $I_q$ required to overcome aerodynamic windage and bearing friction (< 100 mA), eliminating the 1.0–1.5 A reactive currents observed in open loop.
+3. **Hardware Utilization**:
+   - The STM32G474RE hardware CORDIC accelerator executes Park/Clarke vector rotations in 4 clock cycles (< 25 ns).
+   - The X-NUCLEO-IHM07M1 3-shunt TSV994 current amplifiers provide real-time phase feedback synchronized to the TIM1 PWM carrier.

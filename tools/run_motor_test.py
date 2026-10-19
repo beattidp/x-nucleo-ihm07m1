@@ -43,6 +43,33 @@ def ensure_stopped(session_id):
         time.sleep(1.0)
 
 
+def adjust_target_rpm(session_id, target_rpm):
+    """Adjusts target RPM via snapshot check and '<' / '>' keystrokes."""
+    snapshot_file = "/tmp/motor_speed_snap.txt"
+    capture_snapshot(session_id, snapshot_file)
+    with open(snapshot_file, "r", encoding="utf-8", errors="replace") as f:
+        snap = f.read()
+    try:
+        os.remove(snapshot_file)
+    except OSError:
+        pass
+
+    m = re.search(r"Target\s+(\d+)\s+\|\s+Est", snap)
+    if m:
+        curr_rpm = int(m.group(1))
+        delta = target_rpm - curr_rpm
+        steps = int(round(delta / 25.0))
+        if steps > 0:
+            for _ in range(steps):
+                send_keystroke(session_id, ">")
+                time.sleep(0.04)
+        elif steps < 0:
+            for _ in range(abs(steps)):
+                send_keystroke(session_id, "<")
+                time.sleep(0.04)
+        print(f"Adjusted target RPM from {curr_rpm} to ~{target_rpm} ({steps} steps of 25 RPM).")
+
+
 def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
     """Applies profile, speed, and duty configurations while stopped."""
     if profile is not None:
@@ -57,30 +84,7 @@ def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
         # First press '>' once to disable potentiometer override and take manual control
         send_keystroke(session_id, ">")
         time.sleep(0.1)
-        # Check current speed via snapshot
-        snapshot_file = "/tmp/motor_speed_snap.txt"
-        capture_snapshot(session_id, snapshot_file)
-        with open(snapshot_file, "r", encoding="utf-8", errors="replace") as f:
-            snap = f.read()
-        try:
-            os.remove(snapshot_file)
-        except OSError:
-            pass
-
-        m = re.search(r"Target\s+(\d+)\s+\|\s+Est", snap)
-        if m:
-            curr_rpm = int(m.group(1))
-            delta = target_rpm - curr_rpm
-            steps = int(round(delta / 25.0))
-            if steps > 0:
-                for _ in range(steps):
-                    send_keystroke(session_id, ">")
-                    time.sleep(0.04)
-            elif steps < 0:
-                for _ in range(abs(steps)):
-                    send_keystroke(session_id, "<")
-                    time.sleep(0.04)
-            print(f"Adjusted target RPM from {curr_rpm} to ~{target_rpm} ({steps} steps of 25 RPM).")
+        adjust_target_rpm(session_id, target_rpm)
 
     if duty_adjust != 0:
         key = "]" if duty_adjust > 0 else "["
@@ -169,6 +173,41 @@ def analyze_test_run(samples, events):
         outcome = "PARTIAL_OR_UNSTABLE"
         print(f"  [?] PARTIAL ROTATION / SLIP: Detected {total_revs} revs, max {max_opt_rpm} RPM.")
 
+    # Multi-stage speed step analysis if multiple target RPMs were commanded
+    unique_targets = []
+    for s in samples:
+        t = s.get("target_rpm")
+        if t is not None and t not in unique_targets:
+            unique_targets.append(t)
+
+    if len(unique_targets) > 1:
+        print("-" * 80)
+        print(" MULTI-STAGE SPEED STEP RESPONSE & CURRENT CONSUMPTION BREAKDOWN:")
+        print("-" * 80)
+        print(f" {'Target':<10} | {'Est RPM':<10} | {'Real RPM (Avg/Max)':<20} | {'Phase Peak (Avg/Max)':<22} | {'Duty %':<8} | {'Status'}")
+        print("-" * 80)
+        for t in unique_targets:
+            t_samples = [s for s in samples if s.get("target_rpm") == t and s.get("motor_state") in ("STARTING (ALIGN & RAMP)", "RUNNING")]
+            if not t_samples:
+                continue
+            r_rpms = [s["optical_rpm"] if s.get("optical_rpm") is not None else s.get("real_rpm", 0) for s in t_samples]
+            e_rpms = [s["est_rpm"] for s in t_samples if s.get("est_rpm") is not None]
+            p_currs = [s["ipk_ma"] for s in t_samples if s.get("ipk_ma") is not None]
+            duties = [s["active_duty_pct"] for s in t_samples if s.get("active_duty_pct") is not None]
+            statuses = [s.get("optical_status", "") for s in t_samples]
+
+            avg_r = sum(r_rpms) / len(r_rpms) if r_rpms else 0
+            max_r = max(r_rpms) if r_rpms else 0
+            avg_e = sum(e_rpms) / len(e_rpms) if e_rpms else 0
+            avg_p = sum(p_currs) / len(p_currs) if p_currs else 0
+            max_p = max(p_currs) if p_currs else 0
+            avg_d = sum(duties) / len(duties) if duties else 0
+            has_slip = any("SLIP" in st or "VIB" in st for st in statuses)
+            has_stall = any("STALL" in st or "LOCK" in st for st in statuses)
+            cond = "SLIP/VIBRATE" if has_slip else ("STALLED" if has_stall else "IN SYNC")
+
+            print(f" {t:<10} | {avg_e:<10.1f} | {f'{avg_r:.0f} / {max_r}':<20} | {f'{avg_p:.0f} mA / {max_p} mA':<22} | {avg_d:<8.1f} | {cond}")
+
     print("=" * 80)
     return outcome
 
@@ -178,6 +217,8 @@ def main():
     parser.add_argument("--session", "-s", help="Screen session ID (default: auto-detect)")
     parser.add_argument("--profile", "-p", type=int, choices=[1, 2, 3, 4], help="Motor profile (1-4)")
     parser.add_argument("--rpm", type=int, help="Target motor RPM")
+    parser.add_argument("--speed-steps", help="Comma-separated speed steps (e.g. '300,700,1100')")
+    parser.add_argument("--step-duration", type=float, default=12.0, help="Duration per speed step in seconds (default: 12.0s)")
     parser.add_argument("--duty-adjust", type=int, default=0, help="Duty adjustment steps (+ for ], - for [)")
     parser.add_argument("--duration", "-d", type=float, default=6.0, help="Run duration in seconds (default: 6.0s)")
     parser.add_argument("--output-dir", default="test_runs", help="Directory to save logs and CSVs")
@@ -189,25 +230,46 @@ def main():
     log_file = os.path.join(args.output_dir, f"run_{ts}.log")
     csv_file = os.path.join(args.output_dir, f"run_{ts}.csv")
 
+    speed_steps = None
+    if args.speed_steps:
+        speed_steps = [int(x.strip()) for x in args.speed_steps.split(",")]
+        init_rpm = speed_steps[0]
+    else:
+        init_rpm = args.rpm
+
     print(f"Starting automated motor test on screen session '{session_id}'...")
     ensure_stopped(session_id)
 
-    configure_test(session_id, profile=args.profile, target_rpm=args.rpm, duty_adjust=args.duty_adjust)
+    configure_test(session_id, profile=args.profile, target_rpm=init_rpm, duty_adjust=args.duty_adjust)
 
     # Start stream logging
     start_logging(session_id, log_file, redraw=True)
     time.sleep(0.5)
 
-    print(f"Commanding MOTOR START (SPACE) -- Running for {args.duration:.1f} seconds...")
-    send_keystroke(session_id, "space")
-
-    try:
-        time.sleep(args.duration)
-    finally:
-        print("Commanding MOTOR STOP (SPACE)...")
+    if speed_steps:
+        print(f"Commanding MOTOR START (SPACE) -- Running Step 1: {speed_steps[0]} RPM for {args.step_duration:.1f}s...")
         send_keystroke(session_id, "space")
-        time.sleep(1.0)
-        stop_logging(session_id)
+        try:
+            time.sleep(args.step_duration)
+            for idx, target in enumerate(speed_steps[1:], start=2):
+                print(f"Stepping speed to {target} RPM (Step {idx}/{len(speed_steps)}) -- Holding for {args.step_duration:.1f}s...")
+                adjust_target_rpm(session_id, target)
+                time.sleep(args.step_duration)
+        finally:
+            print("Commanding MOTOR STOP (SPACE)...")
+            send_keystroke(session_id, "space")
+            time.sleep(1.0)
+            stop_logging(session_id)
+    else:
+        print(f"Commanding MOTOR START (SPACE) -- Running for {args.duration:.1f} seconds...")
+        send_keystroke(session_id, "space")
+        try:
+            time.sleep(args.duration)
+        finally:
+            print("Commanding MOTOR STOP (SPACE)...")
+            send_keystroke(session_id, "space")
+            time.sleep(1.0)
+            stop_logging(session_id)
 
     print(f"Raw log saved to {log_file} ({os.path.getsize(log_file)} bytes).")
 
