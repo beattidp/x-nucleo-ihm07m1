@@ -161,15 +161,31 @@ void IHM07M1_Init(void) {
     HAL_TIM_IC_Init(&htim2);
 
     TIM_IC_InitTypeDef sICConfig = {0};
-    sICConfig.ICPolarity = TIM_ICPOLARITY_FALLING; /* Falling edge active (default high) */
+    /* Channel 3: Falling edge (direct input from PB10 / TI3) */
+    sICConfig.ICPolarity = TIM_ICPOLARITY_FALLING;
     sICConfig.ICSelection = TIM_ICSELECTION_DIRECTTI;
     sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
-    sICConfig.ICFilter = 0x04; /* Glitch rejection filter against PWM transients */
+    sICConfig.ICFilter = 0x0F; /* Maximum digital filter (8 clocks of fDTS/32 = 1.5 us) */
     HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, TIM_CHANNEL_3);
+
+    /* Channel 4: Rising edge (indirect input from PB10 / TI3) */
+    sICConfig.ICPolarity = TIM_ICPOLARITY_RISING;
+    sICConfig.ICSelection = TIM_ICSELECTION_INDIRECTTI;
+    sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
+    sICConfig.ICFilter = 0x0F;
+    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, TIM_CHANNEL_4);
 
     HAL_NVIC_SetPriority(TIM2_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(TIM2_IRQn);
-    HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_3);
+
+    /* Start both channels in hardware */
+    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
+    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_4);
+
+    /* Arm Channel 3 (falling edge); disarm Channel 4 (rising edge) until falling edge arrives */
+    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
+    __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
+    __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
 
     /* 8. Configure ADC1 for Telemetry (VBUS, Temp, Potentiometer, Currents) */
     GPIO_InitStruct.Pin = IHM07M1_ADC_CURR_A_PIN | IHM07M1_ADC_VBUS_PIN;
@@ -344,15 +360,51 @@ void TIM1_UP_TIM16_IRQHandler(void) {
 }
 
 /**
- * @brief TIM2 Interrupt Handler (Optical photodetector capture on PB10 / TIM2_CH3)
+ * @brief TIM2 Interrupt Handler (Optical photodetector dual-edge capture on PB10 / TI3)
+ *        Strict edge alternation: falling edge disables next falling edge until rising edge.
  */
 void TIM2_IRQHandler(void) {
-    if (__HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC3) != RESET) {
+    if (__HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC3) != RESET &&
+        __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC3) != RESET) {
         __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC3);
         uint32_t capture = htim2.Instance->CCR3;
-        Motor_OpticalCaptureISR(capture);
+        if (Motor_OpticalFallingEdgeISR(capture)) {
+            /* Valid falling edge accepted: disable CC3, arm CC4 */
+            __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC3);
+            __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC4);
+            __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC4);
+        }
+    }
+
+    if (__HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC4) != RESET &&
+        __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC4) != RESET) {
+        __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC4);
+        uint32_t capture = htim2.Instance->CCR4;
+        if (Motor_OpticalRisingEdgeISR(capture)) {
+            /* Valid rising edge accepted: disable CC4, arm CC3 */
+            __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
+            __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3);
+            __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
+        }
     }
     (void)htim2.Instance->SR;
+}
+
+/**
+ * @brief Reset optical input capture interrupt state based on physical pin level
+ */
+void IHM07M1_OpticalResetEdgeState(void) {
+    if (HAL_GPIO_ReadPin(IHM07M1_HALL3_PORT, IHM07M1_HALL3_PIN) == GPIO_PIN_SET) {
+        /* Pin is high (idle): arm falling edge, disarm rising edge */
+        __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
+        __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
+        __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
+    } else {
+        /* Pin is low (marker present): wait for rising edge */
+        __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC3);
+        __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
+        __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC4);
+    }
 }
 
 /**
@@ -567,4 +619,5 @@ float PowerStage_ReadPotentiometer(void) { return IHM07M1_ReadPotentiometer(); }
 void PowerStage_ReadRawCurrentSensors(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_ReadRawCurrentSensors(a, b, c); }
 void PowerStage_CalibrateCurrentOffsets(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_CalibrateCurrentOffsets(a, b, c); }
 void PowerStage_GetInjectedCurrents(float* a, float* b, float* c) { IHM07M1_GetInjectedCurrents(a, b, c); }
+void PowerStage_OpticalResetEdgeState(void) { IHM07M1_OpticalResetEdgeState(); }
 #endif

@@ -28,6 +28,7 @@ typedef struct MotorTelemetry_s {
     float vbus_v;                   /* DC Bus voltage in Volts */
     float temp_c;                   /* Driver board temperature in deg C */
     float pot_pct;                  /* User speed potentiometer (0 - 100 %) */
+    float pot_target_rpm;           /* Computed user potentiometer target speed in RPM */
     float current_a_amps;           /* Phase A current in Amps */
     float current_b_amps;           /* Phase B current in Amps */
     float current_c_amps;           /* Phase C current in Amps */
@@ -94,7 +95,9 @@ void Motor_ResetOpticalCount(void);
 void Motor_SetSinusoidalOutput(float freq_hz, float duty_pct);
 void Motor_Update1ms(void);
 void Motor_PWM_UpdateISR(void);
-void Motor_OpticalCaptureISR(uint32_t capture_val);
+bool Motor_OpticalFallingEdgeISR(uint32_t capture_val);
+bool Motor_OpticalRisingEdgeISR(uint32_t capture_val);
+void Motor_OpticalResetEdgeState(void);
 void Motor_GetTelemetry(MotorTelemetry_t* telem);
 const MotorControl_t* Motor_GetControl(void);
 

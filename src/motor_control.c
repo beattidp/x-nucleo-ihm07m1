@@ -62,32 +62,88 @@ static uint16_t g_raw_offset_a = 2048;
 static uint16_t g_raw_offset_b = 2048;
 static uint16_t g_raw_offset_c = 2048;
 
-/* Optical Tachometer Capture State (TIM2 Channel 3 on PB10 / J3-Z+) */
+/* Optical Tachometer Capture State (TIM2 Channel 3 [Falling] & Channel 4 [Rising] on PB10 / J3-Z+) */
+typedef enum {
+    OPTICAL_EDGE_WAIT_FALLING = 0,
+    OPTICAL_EDGE_WAIT_RISING
+} OpticalEdgeState_t;
+
+static volatile OpticalEdgeState_t s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
 static volatile uint32_t s_last_optical_capture = 0;
 static volatile bool s_has_previous_optical_capture = false;
+static volatile uint32_t s_last_rising_capture = 0;
+static volatile bool s_has_rising_capture = false;
 static volatile uint32_t s_optical_pulse_count = 0;
 static volatile uint32_t s_optical_delta_ticks = 0;
 static volatile uint32_t s_last_optical_pulse_tick_ms = 0;
 static volatile bool s_new_optical_pulse = false;
 
 /**
- * @brief TIM2 Channel 3 Optical Input Capture ISR Callback
+ * @brief TIM2 Channel 3 Optical Input Capture ISR Callback (Falling Edge)
  *        Captures 1 us timer count on falling edge (photodetector trigger)
+ *        Enforces strict edge alternation and rejects rising-edge transition slew bounce.
  */
-void Motor_OpticalCaptureISR(uint32_t capture_val) {
+bool Motor_OpticalFallingEdgeISR(uint32_t capture_val) {
+    if (s_optical_edge_state != OPTICAL_EDGE_WAIT_FALLING) {
+        return false; /* Enforce edge alternation: reject consecutive falling edges */
+    }
+
+    /* Reject spurious falling edges that occur right after a rising edge (transition slew bounce) */
+    if (s_has_rising_capture) {
+        uint32_t dt_since_rising = capture_val - s_last_rising_capture;
+        if (dt_since_rising < 1500) {
+            return false; /* Slew noise on rising transition: ignore and keep waiting for real marker */
+        }
+    }
+
     if (s_has_previous_optical_capture) {
         uint32_t dt = capture_val - s_last_optical_capture;
-        /* Reject spurious glitches and vibration chatter narrower than 4000 us (> 15,000 RPM) */
-        if (dt < 4000) {
-            return;
+        /* Reject spurious glitches narrower than 5000 us (> 12,000 RPM) */
+        if (dt < 5000) {
+            return false;
         }
         s_optical_delta_ticks = dt;
         s_new_optical_pulse = true;
     }
+
+    s_optical_edge_state = OPTICAL_EDGE_WAIT_RISING;
     s_optical_pulse_count++;
     s_last_optical_pulse_tick_ms = HAL_GetTick();
     s_last_optical_capture = capture_val;
     s_has_previous_optical_capture = true;
+    return true;
+}
+
+/**
+ * @brief TIM2 Channel 4 Optical Input Capture ISR Callback (Rising Edge)
+ *        Acknowledges optical marker has passed; arms receiver for next falling edge.
+ */
+bool Motor_OpticalRisingEdgeISR(uint32_t capture_val) {
+    if (s_optical_edge_state != OPTICAL_EDGE_WAIT_RISING) {
+        return false;
+    }
+
+    /* Verify marker was LOW for at least 800 us (valid optical pulse, not impulse noise) */
+    if (s_has_previous_optical_capture) {
+        uint32_t pulse_width = capture_val - s_last_optical_capture;
+        if (pulse_width < 800) {
+            return false;
+        }
+    }
+
+    s_last_rising_capture = capture_val;
+    s_has_rising_capture = true;
+    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
+    return true;
+}
+
+/**
+ * @brief Reset optical edge alternation state and re-arm timer capture
+ */
+void Motor_OpticalResetEdgeState(void) {
+    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
+    s_has_rising_capture = false;
+    PowerStage_OpticalResetEdgeState();
 }
 
 void Motor_CalibrateCurrentOffsets(void) {
@@ -114,6 +170,7 @@ void Motor_Init(void) {
     s_optical_delta_ticks = 0;
     s_last_optical_pulse_tick_ms = 0;
     s_new_optical_pulse = false;
+    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
 
     PowerStage_Init();
     PowerStage_DisableBridge();
@@ -123,9 +180,10 @@ void Motor_Init(void) {
 
     /* Read initial potentiometer position (0 - 100%) and set target speed */
     g_telemetry.pot_pct = PowerStage_ReadPotentiometer();
-    float min_s = (g_motor_ctrl.min_rpm > 50.0f) ? g_motor_ctrl.min_rpm : MOTOR_POT_MIN_RPM;
+    float min_s = MOTOR_POT_MIN_RPM;
     float max_s = (g_motor_ctrl.max_rpm > min_s) ? g_motor_ctrl.max_rpm : MOTOR_POT_MAX_RPM;
     float init_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
+    g_telemetry.pot_target_rpm = init_rpm;
     Motor_SetSpeed(init_rpm);
 
     /* Initialize CORDIC hardware accelerator and FOC pipeline */
@@ -151,11 +209,14 @@ void Motor_ApplyProfile(const MotorProfile_t* prof) {
     g_motor_ctrl.torque_limit_amps = prof->max_continuous_amps;
     g_motor_ctrl.current_limit_amps = prof->hw_break_trip_amps;
 
-    /* Re-evaluate target speed based on pot position and new RPM range */
-    float min_s = g_motor_ctrl.min_rpm;
-    float max_s = g_motor_ctrl.max_rpm;
-    float new_target_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
-    Motor_SetSpeed(new_target_rpm);
+    /* If potentiometer control is enabled, re-evaluate target speed based on pot position and profile RPM range */
+    if (g_motor_ctrl.pot_control_enabled) {
+        float min_s = MOTOR_POT_MIN_RPM;
+        float max_s = (g_motor_ctrl.max_rpm > min_s) ? g_motor_ctrl.max_rpm : MOTOR_POT_MAX_RPM;
+        float new_target_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
+        g_telemetry.pot_target_rpm = new_target_rpm;
+        Motor_SetSpeed(new_target_rpm);
+    }
 
     /* Update hardware current trip threshold */
     PowerStage_SetCurrentTripThreshold(prof->hw_break_trip_amps);
@@ -292,6 +353,8 @@ void Motor_ResetFault(void) {
 void Motor_ResetOpticalCount(void) {
     s_optical_pulse_count = 0;
     g_telemetry.optical_pulse_count = 0;
+    s_has_previous_optical_capture = false;
+    Motor_OpticalResetEdgeState();
 }
 
 /**
@@ -374,15 +437,23 @@ void Motor_Update1ms(void) {
     }
 
     uint32_t elapsed_since_pulse = (s_last_optical_pulse_tick_ms > 0) ? (now - s_last_optical_pulse_tick_ms) : 999999;
-    if (elapsed_since_pulse > 800) {
-        /* Pulse timeout: slower than 50 RPM or completely stationary */
+    if (elapsed_since_pulse > 2000) {
+        /* Pulse timeout: slower than 30 RPM or completely stationary */
         g_telemetry.optical_rpm = 0.0f;
         s_has_previous_optical_capture = false;
-    } else if (elapsed_since_pulse > 80) {
-        /* Dynamic decay: smoothly decay RPM if interval exceeds period of current speed */
-        float max_possible_rpm = (60000.0f / (float)OPTICAL_PULSES_PER_REV) / (float)elapsed_since_pulse;
-        if (g_telemetry.optical_rpm > max_possible_rpm) {
-            g_telemetry.optical_rpm = max_possible_rpm;
+        Motor_OpticalResetEdgeState();
+    } else if (g_telemetry.optical_rpm > 1.0f) {
+        /* Expected period for current estimated RPM: T_ms = 60000 / (optical_rpm * pulses_per_rev) */
+        uint32_t expected_period_ms = (uint32_t)(60000.0f / (g_telemetry.optical_rpm * (float)OPTICAL_PULSES_PER_REV));
+        /* Only apply dynamic decay if interval has exceeded 1.5x expected period (min 120 ms) */
+        uint32_t decay_threshold_ms = (expected_period_ms * 3) / 2;
+        if (decay_threshold_ms < 120) decay_threshold_ms = 120;
+
+        if (elapsed_since_pulse > decay_threshold_ms) {
+            float max_possible_rpm = (60000.0f / (float)OPTICAL_PULSES_PER_REV) / (float)elapsed_since_pulse;
+            if (g_telemetry.optical_rpm > max_possible_rpm) {
+                g_telemetry.optical_rpm = max_possible_rpm;
+            }
         }
     }
     g_telemetry.optical_pulse_count = s_optical_pulse_count / OPTICAL_PULSES_PER_REV;
@@ -417,11 +488,12 @@ void Motor_Update1ms(void) {
     }
 
     /* 3. Motor State Handling */
-    float min_s = (g_motor_ctrl.min_rpm > 50.0f) ? g_motor_ctrl.min_rpm : MOTOR_POT_MIN_RPM;
+    float min_s = MOTOR_POT_MIN_RPM;
     float max_s = (g_motor_ctrl.max_rpm > min_s) ? g_motor_ctrl.max_rpm : MOTOR_POT_MAX_RPM;
+    float pot_demanded_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
+    g_telemetry.pot_target_rpm = pot_demanded_rpm;
 
     if (g_motor_ctrl.pot_control_enabled) {
-        float pot_demanded_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
         if (g_motor_ctrl.state == MOTOR_STATE_STOPPED) {
             g_motor_ctrl.target_speed_rpm = pot_demanded_rpm;
             g_motor_ctrl.electrical_freq_hz = (pot_demanded_rpm * (float)g_motor_ctrl.pole_pairs) / 60.0f;

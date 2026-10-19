@@ -126,6 +126,7 @@ void  IHM07M1_ReadRawCurrentSensors(uint16_t* raw_a, uint16_t* raw_b, uint16_t* 
 void  IHM07M1_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uint16_t* offset_c);
 void  IHM07M1_GetInjectedCurrents(float* ia, float* ib, float* ic);
 void  IHM07M1_StartInjectedSampling(void);
+void  IHM07M1_OpticalResetEdgeState(void);
 
 #ifdef __cplusplus
 }

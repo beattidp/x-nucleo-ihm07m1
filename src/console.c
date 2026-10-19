@@ -260,6 +260,7 @@ typedef struct {
     float vbus_v;
     float temp_c;
     float pot_pct;
+    float pot_target_rpm;
     bool pot_ctrl;
     bool fault_active;
     uint8_t hall_state;
@@ -362,16 +363,17 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     /* 5. Speed Potentiometer (R42): Row 11, Col 31 */
     if (!s_main_shadow.valid || 
         fabsf(telem->pot_pct - s_main_shadow.pot_pct) >= 0.2f || 
+        fabsf(telem->pot_target_rpm - s_main_shadow.pot_target_rpm) >= 1.0f ||
         ctrl->pot_control_enabled != s_main_shadow.pot_ctrl) {
-        float pot_demanded_rpm = MOTOR_POT_MIN_RPM + (telem->pot_pct / 100.0f) * (MOTOR_POT_MAX_RPM - MOTOR_POT_MIN_RPM);
         if (ctrl->pot_control_enabled) {
             printf("\033[11;31H%5.1f %% [ACTIVE -> Target %4d RPM]   ",
-                   telem->pot_pct, (int)pot_demanded_rpm);
+                   telem->pot_pct, (int)telem->pot_target_rpm);
         } else {
             printf("\033[11;31H%5.1f %% [MANUAL (Press 'P' to enable)]",
                    telem->pot_pct);
         }
         s_main_shadow.pot_pct = telem->pot_pct;
+        s_main_shadow.pot_target_rpm = telem->pot_target_rpm;
         s_main_shadow.pot_ctrl = ctrl->pot_control_enabled;
     }
 
