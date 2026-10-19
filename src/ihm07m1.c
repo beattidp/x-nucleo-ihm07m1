@@ -7,6 +7,14 @@ TIM_HandleTypeDef htim16;
 TIM_HandleTypeDef htim2;
 ADC_HandleTypeDef hadc1;
 
+typedef enum {
+    OPTICAL_EDGE_WAIT_FALLING = 0,
+    OPTICAL_EDGE_WAIT_RISING  = 1
+} OpticalEdgeState_t;
+
+static volatile OpticalEdgeState_t s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
+static volatile uint32_t s_last_rising_capture = 0;
+
 /**
  * @brief Initialize all GPIOs, Timers, and ADCs for the X-NUCLEO-IHM07M1 expansion board
  */
@@ -141,13 +149,29 @@ void IHM07M1_Init(void) {
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(IHM07M1_HALL2_PORT, &GPIO_InitStruct);
 
-    /* PB10 (Optical Tachometer / Hall 3 on J3-Z+): TIM2_CH3 Input Capture */
+#if (OPTICAL_TACH_USE_CN10_PB11 == 1)
+    /* PB10 (Hall 3 on J3 Pin 3): Dedicated Hall sensor input */
     GPIO_InitStruct.Pin = IHM07M1_HALL3_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL3_PORT, &GPIO_InitStruct);
+
+    /* PB11 (Optical Tachometer on Morpho CN10 Pin 18): TIM2_CH4 Input Capture */
+    GPIO_InitStruct.Pin = OPTICAL_TACH_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-    GPIO_InitStruct.Alternate = IHM07M1_HALL3_AF;
-    HAL_GPIO_Init(IHM07M1_HALL3_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Alternate = OPTICAL_TACH_AF;
+    HAL_GPIO_Init(OPTICAL_TACH_PORT, &GPIO_InitStruct);
+#else
+    /* PB10 (Optical Tachometer / Hall 3 on J3-Z+): TIM2_CH3 Input Capture */
+    GPIO_InitStruct.Pin = OPTICAL_TACH_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = OPTICAL_TACH_AF;
+    HAL_GPIO_Init(OPTICAL_TACH_PORT, &GPIO_InitStruct);
+#endif
 
     /* Initialize TIM2 32-bit timebase for optical period measurement:
      * Clock = 170 MHz. Prescaler = 169 -> 1.000 MHz (1.0 us tick resolution).
@@ -160,32 +184,24 @@ void IHM07M1_Init(void) {
     htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
     HAL_TIM_IC_Init(&htim2);
 
+    /* Single-Channel Dynamic Polarity Capture:
+     * Starts with direct input capture armed on falling edge.
+     * Hardware digital filter: 6 clocks of fDTS/4 = ~141 ns */
     TIM_IC_InitTypeDef sICConfig = {0};
-    /* Channel 3: Falling edge (direct input from PB10 / TI3) */
     sICConfig.ICPolarity = TIM_ICPOLARITY_FALLING;
     sICConfig.ICSelection = TIM_ICSELECTION_DIRECTTI;
     sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
-    sICConfig.ICFilter = 0x0F; /* Maximum digital filter (8 clocks of fDTS/32 = 1.5 us) */
-    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, TIM_CHANNEL_3);
-
-    /* Channel 4: Rising edge (indirect input from PB10 / TI3) */
-    sICConfig.ICPolarity = TIM_ICPOLARITY_RISING;
-    sICConfig.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-    sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
-    sICConfig.ICFilter = 0x0F;
-    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, TIM_CHANNEL_4);
+    sICConfig.ICFilter = 0x0F; /* Hardware digital noise filter (8 clocks of fDTS/32 = 1.5 us) */
+    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, OPTICAL_TACH_TIM_CHANNEL);
 
     HAL_NVIC_SetPriority(TIM2_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(TIM2_IRQn);
 
-    /* Start both channels in hardware */
-    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_3);
-    HAL_TIM_IC_Start(&htim2, TIM_CHANNEL_4);
+    /* Start optical input capture channel with interrupt */
+    HAL_TIM_IC_Start_IT(&htim2, OPTICAL_TACH_TIM_CHANNEL);
 
-    /* Arm Channel 3 (falling edge); disarm Channel 4 (rising edge) until falling edge arrives */
-    __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
-    __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
-    __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
+    /* Synchronize initial capture polarity with physical pin level */
+    IHM07M1_OpticalResetEdgeState();
 
     /* 8. Configure ADC1 for Telemetry (VBUS, Temp, Potentiometer, Currents) */
     GPIO_InitStruct.Pin = IHM07M1_ADC_CURR_A_PIN | IHM07M1_ADC_VBUS_PIN;
@@ -360,50 +376,87 @@ void TIM1_UP_TIM16_IRQHandler(void) {
 }
 
 /**
- * @brief TIM2 Interrupt Handler (Optical photodetector dual-edge capture on PB10 / TI3)
- *        Strict edge alternation: falling edge disables next falling edge until rising edge.
+ * @brief TIM2 Interrupt Handler (Optical tachometer single-channel dynamic polarity capture)
+ *        Revolution is detected strictly on falling edge.
+ *        Inside the ISR, capture polarity is dynamically toggled to rising edge to wait for marker exit,
+ *        then toggled back to falling edge for the next revolution.
  */
 void TIM2_IRQHandler(void) {
-    if (__HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC3) != RESET &&
-        __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC3) != RESET) {
-        __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC3);
-        uint32_t capture = htim2.Instance->CCR3;
-        if (Motor_OpticalFallingEdgeISR(capture)) {
-            /* Valid falling edge accepted: disable CC3, arm CC4 */
-            __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC3);
-            __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC4);
-            __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC4);
-        }
-    }
+    if (__HAL_TIM_GET_IT_SOURCE(&htim2, OPTICAL_TACH_TIM_IT_CC) != RESET &&
+        __HAL_TIM_GET_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC) != RESET) {
 
-    if (__HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC4) != RESET &&
-        __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC4) != RESET) {
-        __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC4);
-        uint32_t capture = htim2.Instance->CCR4;
-        if (Motor_OpticalRisingEdgeISR(capture)) {
-            /* Valid rising edge accepted: disable CC4, arm CC3 */
-            __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
-            __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3);
-            __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
+        __HAL_TIM_CLEAR_IT(&htim2, OPTICAL_TACH_TIM_IT_CC);
+
+        if (s_optical_edge_state == OPTICAL_EDGE_WAIT_FALLING) {
+            uint32_t capture = htim2.Instance->OPTICAL_TACH_TIM_CCR;
+
+            /* Blanking filter against rising transition slew bounce:
+             * Marker exit (rising edge) to marker entrance (falling edge) represents
+             * at least 80% of rotor circumference. At 60,000 RPM (1000 rev/s = 1000 us/rev),
+             * this interval is > 800 us. Reject any falling edge occurring < 500 us after rising edge. */
+            uint32_t dt_since_rising = capture - s_last_rising_capture;
+            if (s_last_rising_capture != 0 && dt_since_rising < 500) {
+                __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+                NVIC_ClearPendingIRQ(TIM2_IRQn);
+                return;
+            }
+
+            Motor_OpticalFallingEdgeISR(capture);
+
+            /* Switch capture polarity to RISING (wait for marker exit) */
+            TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
+            TIM_RESET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL);
+            TIM_SET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_RISING);
+            __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+            TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
+            __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+
+            s_optical_edge_state = OPTICAL_EDGE_WAIT_RISING;
+        } else {
+            /* Marker has cleared (rising edge): record timestamp and switch polarity back to FALLING */
+            s_last_rising_capture = htim2.Instance->OPTICAL_TACH_TIM_CCR;
+
+            /* Verify line has solidly reached logic HIGH before re-arming falling edge */
+            uint32_t timeout = 500;
+            while (HAL_GPIO_ReadPin(OPTICAL_TACH_PORT, OPTICAL_TACH_PIN) == GPIO_PIN_RESET && --timeout);
+            for (volatile int i = 0; i < 200; i++);
+
+            TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
+            TIM_RESET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL);
+            TIM_SET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_FALLING);
+            __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+            TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
+            __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+
+            s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
         }
+        NVIC_ClearPendingIRQ(TIM2_IRQn);
     }
     (void)htim2.Instance->SR;
 }
 
 /**
- * @brief Reset optical input capture interrupt state based on physical pin level
+ * @brief Reset optical input capture interrupt polarity based on physical pin level
  */
 void IHM07M1_OpticalResetEdgeState(void) {
-    if (HAL_GPIO_ReadPin(IHM07M1_HALL3_PORT, IHM07M1_HALL3_PIN) == GPIO_PIN_SET) {
-        /* Pin is high (idle): arm falling edge, disarm rising edge */
-        __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC4);
-        __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
-        __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC3);
+    if (HAL_GPIO_ReadPin(OPTICAL_TACH_PORT, OPTICAL_TACH_PIN) == GPIO_PIN_SET) {
+        /* Pin is high (idle, no marker present): arm falling edge */
+        TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
+        TIM_RESET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL);
+        TIM_SET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_FALLING);
+        __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+        TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
+        __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+        s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
     } else {
-        /* Pin is low (marker present): wait for rising edge */
-        __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_CC3);
-        __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC3 | TIM_FLAG_CC4);
-        __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_CC4);
+        /* Pin is low (marker present under detector): arm rising edge */
+        TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
+        TIM_RESET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL);
+        TIM_SET_CAPTUREPOLARITY(&htim2, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_RISING);
+        __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+        TIM_CCxChannelCmd(htim2.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
+        __HAL_TIM_CLEAR_FLAG(&htim2, OPTICAL_TACH_TIM_FLAG_CC);
+        s_optical_edge_state = OPTICAL_EDGE_WAIT_RISING;
     }
 }
 

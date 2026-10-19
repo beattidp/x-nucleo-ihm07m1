@@ -62,87 +62,43 @@ static uint16_t g_raw_offset_a = 2048;
 static uint16_t g_raw_offset_b = 2048;
 static uint16_t g_raw_offset_c = 2048;
 
-/* Optical Tachometer Capture State (TIM2 Channel 3 [Falling] & Channel 4 [Rising] on PB10 / J3-Z+) */
-typedef enum {
-    OPTICAL_EDGE_WAIT_FALLING = 0,
-    OPTICAL_EDGE_WAIT_RISING
-} OpticalEdgeState_t;
-
-static volatile OpticalEdgeState_t s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
+/* Optical Tachometer Capture State (TIM2 Single-Channel Falling Edge Capture) */
 static volatile uint32_t s_last_optical_capture = 0;
 static volatile bool s_has_previous_optical_capture = false;
-static volatile uint32_t s_last_rising_capture = 0;
-static volatile bool s_has_rising_capture = false;
 static volatile uint32_t s_optical_pulse_count = 0;
 static volatile uint32_t s_optical_delta_ticks = 0;
 static volatile uint32_t s_last_optical_pulse_tick_ms = 0;
 static volatile bool s_new_optical_pulse = false;
 
 /**
- * @brief TIM2 Channel 3 Optical Input Capture ISR Callback (Falling Edge)
+ * @brief TIM2 Optical Input Capture ISR Callback (Falling Edge)
  *        Captures 1 us timer count on falling edge (photodetector trigger)
- *        Enforces strict edge alternation and rejects rising-edge transition slew bounce.
+ *        Calculates mechanical revolution period without minimum pulse width constraints.
  */
-bool Motor_OpticalFallingEdgeISR(uint32_t capture_val) {
-    if (s_optical_edge_state != OPTICAL_EDGE_WAIT_FALLING) {
-        return false; /* Enforce edge alternation: reject consecutive falling edges */
-    }
-
-    /* Reject spurious falling edges that occur right after a rising edge (transition slew bounce) */
-    if (s_has_rising_capture) {
-        uint32_t dt_since_rising = capture_val - s_last_rising_capture;
-        if (dt_since_rising < 1500) {
-            return false; /* Slew noise on rising transition: ignore and keep waiting for real marker */
-        }
-    }
-
+void Motor_OpticalFallingEdgeISR(uint32_t capture_val) {
     if (s_has_previous_optical_capture) {
         uint32_t dt = capture_val - s_last_optical_capture;
-        /* Reject spurious glitches narrower than 5000 us (> 12,000 RPM) */
-        if (dt < 5000) {
-            return false;
+        /* Glitch rejection: reject impossible transient spikes (> 60,000 RPM / dt < 1000 us) */
+        if (dt >= 1000) {
+            s_optical_delta_ticks = dt;
+            s_new_optical_pulse = true;
+            s_optical_pulse_count++;
+            s_last_optical_pulse_tick_ms = HAL_GetTick();
+            s_last_optical_capture = capture_val;
         }
-        s_optical_delta_ticks = dt;
-        s_new_optical_pulse = true;
+    } else {
+        s_last_optical_capture = capture_val;
+        s_has_previous_optical_capture = true;
+        s_optical_pulse_count++;
+        s_last_optical_pulse_tick_ms = HAL_GetTick();
     }
-
-    s_optical_edge_state = OPTICAL_EDGE_WAIT_RISING;
-    s_optical_pulse_count++;
-    s_last_optical_pulse_tick_ms = HAL_GetTick();
-    s_last_optical_capture = capture_val;
-    s_has_previous_optical_capture = true;
-    return true;
-}
-
-/**
- * @brief TIM2 Channel 4 Optical Input Capture ISR Callback (Rising Edge)
- *        Acknowledges optical marker has passed; arms receiver for next falling edge.
- */
-bool Motor_OpticalRisingEdgeISR(uint32_t capture_val) {
-    if (s_optical_edge_state != OPTICAL_EDGE_WAIT_RISING) {
-        return false;
-    }
-
-    /* Verify marker was LOW for at least 800 us (valid optical pulse, not impulse noise) */
-    if (s_has_previous_optical_capture) {
-        uint32_t pulse_width = capture_val - s_last_optical_capture;
-        if (pulse_width < 800) {
-            return false;
-        }
-    }
-
-    s_last_rising_capture = capture_val;
-    s_has_rising_capture = true;
-    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
-    return true;
 }
 
 /**
  * @brief Reset optical edge alternation state and re-arm timer capture
  */
 void Motor_OpticalResetEdgeState(void) {
-    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
-    s_has_rising_capture = false;
+    s_has_previous_optical_capture = false;
     PowerStage_OpticalResetEdgeState();
 }
 
@@ -170,7 +126,7 @@ void Motor_Init(void) {
     s_optical_delta_ticks = 0;
     s_last_optical_pulse_tick_ms = 0;
     s_new_optical_pulse = false;
-    s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
+    Motor_OpticalResetEdgeState();
 
     PowerStage_Init();
     PowerStage_DisableBridge();

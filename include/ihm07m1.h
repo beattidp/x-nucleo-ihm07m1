@@ -66,6 +66,34 @@ extern ADC_HandleTypeDef hadc1;
 #define IHM07M1_HALL3_PORT          GPIOB
 #define IHM07M1_HALL3_AF            GPIO_AF1_TIM2
 
+/* Optical Tachometer Input Pin Selection:
+ * 0 = PB10 on J3 Pin 3 (J3-Z+ / TIM2_CH3) - Default for current sensorless setup
+ * 1 = PB11 on Morpho CN10 Pin 18 (TIM2_CH4) - Dedicated pin allowing J3 to host H1, H2, H3 Hall sensors
+ */
+#ifndef OPTICAL_TACH_USE_CN10_PB11
+#define OPTICAL_TACH_USE_CN10_PB11   0
+#endif
+
+#if (OPTICAL_TACH_USE_CN10_PB11 == 1)
+#define OPTICAL_TACH_PIN            GPIO_PIN_11
+#define OPTICAL_TACH_PORT           GPIOB
+#define OPTICAL_TACH_AF             GPIO_AF1_TIM2
+#define OPTICAL_TACH_TIM_CHANNEL    TIM_CHANNEL_4
+#define OPTICAL_TACH_TIM_FLAG_CC    TIM_FLAG_CC4
+#define OPTICAL_TACH_TIM_IT_CC      TIM_IT_CC4
+#define OPTICAL_TACH_TIM_CCR        CCR4
+#define OPTICAL_TACH_PIN_LABEL      "CN10-18"
+#else
+#define OPTICAL_TACH_PIN            GPIO_PIN_10
+#define OPTICAL_TACH_PORT           GPIOB
+#define OPTICAL_TACH_AF             GPIO_AF1_TIM2
+#define OPTICAL_TACH_TIM_CHANNEL    TIM_CHANNEL_3
+#define OPTICAL_TACH_TIM_FLAG_CC    TIM_FLAG_CC3
+#define OPTICAL_TACH_TIM_IT_CC      TIM_IT_CC3
+#define OPTICAL_TACH_TIM_CCR        CCR3
+#define OPTICAL_TACH_PIN_LABEL      "J3-Z+"
+#endif
+
 /* Onboard IHM07M1 Red User LED (D11) */
 #define IHM07M1_RED_LED_PIN         GPIO_PIN_2
 #define IHM07M1_RED_LED_PORT        GPIOB
