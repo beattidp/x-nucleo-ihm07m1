@@ -72,6 +72,7 @@ float PowerStage_ReadTemperature(void);
 float PowerStage_ReadPotentiometer(void);
 void  PowerStage_ReadRawCurrentSensors(uint16_t* raw_a, uint16_t* raw_b, uint16_t* raw_c);
 void  PowerStage_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uint16_t* offset_c);
+void  PowerStage_GetInjectedCurrents(float* ia, float* ib, float* ic);
 
 #ifdef __cplusplus
 }

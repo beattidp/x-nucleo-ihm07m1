@@ -2,6 +2,7 @@
 #include "motor_profiles.h"
 #include "motor_characterization.h"
 #include "power_stage.h"
+#include "foc.h"
 #include <math.h>
 
 #define PI_FLOAT                    3.14159265358979323846f
@@ -127,6 +128,9 @@ void Motor_Init(void) {
     float init_rpm = min_s + (g_telemetry.pot_pct / 100.0f) * (max_s - min_s);
     Motor_SetSpeed(init_rpm);
 
+    /* Initialize CORDIC hardware accelerator and FOC pipeline */
+    FOC_Init();
+
     /* Measure zero-current ADC quiescent offsets */
     Motor_CalibrateCurrentOffsets();
 
@@ -230,6 +234,7 @@ void Motor_Stop(void) {
     s_active_ccr_scale = 0;
     PowerStage_DisableBridge();
     PowerStage_StopPWM();
+    FOC_Reset();
 }
 
 void Motor_Brake(void) {
@@ -321,27 +326,29 @@ void Motor_Update1ms(void) {
         g_telemetry.temp_c = PowerStage_ReadTemperature();
     }
 
-    /* Current Shunts with Calibrated Zero-Current Baseline Subtraction */
-    uint16_t raw_ia = 0, raw_ib = 0, raw_ic = 0;
-    PowerStage_ReadRawCurrentSensors(&raw_ia, &raw_ib, &raw_ic);
+    /* Synchronized Current Shunts & CORDIC FOC Frame Tracking */
+    if (g_motor_ctrl.state == MOTOR_STATE_RUNNING ||
+        g_motor_ctrl.state == MOTOR_STATE_STARTING ||
+        g_motor_ctrl.state == MOTOR_STATE_CHARACTERIZING) {
+        g_telemetry.current_a_amps = g_foc.currents.ia;
+        g_telemetry.current_b_amps = g_foc.currents.ib;
+        g_telemetry.current_c_amps = g_foc.currents.ic;
+        g_telemetry.id_amps = g_foc.currents.id_filt;
+        g_telemetry.iq_amps = g_foc.currents.iq_filt;
 
-    int32_t diff_a = (int32_t)raw_ia - (int32_t)g_raw_offset_a;
-    int32_t diff_b = (int32_t)raw_ib - (int32_t)g_raw_offset_b;
-    int32_t diff_c = (int32_t)raw_ic - (int32_t)g_raw_offset_c;
-
-    if (diff_a < 0) diff_a = -diff_a;
-    if (diff_b < 0) diff_b = -diff_b;
-    if (diff_c < 0) diff_c = -diff_c;
-
-    float gain = (caps && caps->current_sense_gain > 0.001f) ? caps->current_sense_gain : 0.5049f;
-    g_telemetry.current_a_amps = (((float)diff_a / 4095.0f) * 3.3f) / gain;
-    g_telemetry.current_b_amps = (((float)diff_b / 4095.0f) * 3.3f) / gain;
-    g_telemetry.current_c_amps = (((float)diff_c / 4095.0f) * 3.3f) / gain;
-
-    float p_curr = g_telemetry.current_a_amps;
-    if (g_telemetry.current_b_amps > p_curr) p_curr = g_telemetry.current_b_amps;
-    if (g_telemetry.current_c_amps > p_curr) p_curr = g_telemetry.current_c_amps;
-    g_telemetry.current_peak_amps = p_curr;
+        float p_curr = fabsf(g_telemetry.current_a_amps);
+        if (fabsf(g_telemetry.current_b_amps) > p_curr) p_curr = fabsf(g_telemetry.current_b_amps);
+        if (fabsf(g_telemetry.current_c_amps) > p_curr) p_curr = fabsf(g_telemetry.current_c_amps);
+        g_telemetry.current_peak_amps = p_curr;
+    } else {
+        /* When motor is stopped, half-bridge drivers are disabled (zero phase current) */
+        g_telemetry.current_a_amps = 0.0f;
+        g_telemetry.current_b_amps = 0.0f;
+        g_telemetry.current_c_amps = 0.0f;
+        g_telemetry.id_amps = 0.0f;
+        g_telemetry.iq_amps = 0.0f;
+        g_telemetry.current_peak_amps = 0.0f;
+    }
 
     /* Hall Sensors */
     g_telemetry.hall_state = PowerStage_ReadHallSensors();
@@ -684,6 +691,17 @@ void Motor_PWM_UpdateISR(void) {
     if (g_motor_ctrl.state == MOTOR_STATE_RUNNING || 
         g_motor_ctrl.state == MOTOR_STATE_STARTING ||
         g_motor_ctrl.state == MOTOR_STATE_CHARACTERIZING) {
+
+        /* 1. Read synchronized 3-shunt currents sampled at TIM1 PWM valley */
+        float ia = 0.0f, ib = 0.0f, ic = 0.0f;
+        PowerStage_GetInjectedCurrents(&ia, &ib, &ic);
+
+        /* 2. Map 32-bit phase accumulator to electrical angle theta in radians [-PI, PI) */
+        float theta_rad = ((float)(int32_t)s_phase_accum) * (PI_FLOAT / 2147483648.0f);
+
+        /* 3. Execute Clarke and CORDIC hardware Park transformations */
+        FOC_ProcessCurrents(ia, ib, ic, theta_rad);
+
         if (g_motor_ctrl.mode == MOTOR_MODE_OPEN_LOOP_CHAR) {
             s_phase_accum += (uint32_t)s_phase_step;
 

@@ -32,6 +32,8 @@ typedef struct MotorTelemetry_s {
     float current_b_amps;           /* Phase B current in Amps */
     float current_c_amps;           /* Phase C current in Amps */
     float current_peak_amps;        /* Highest instantaneous phase current */
+    float id_amps;                  /* Direct (flux-producing) current in Amps */
+    float iq_amps;                  /* Quadrature (torque-producing) current in Amps */
     uint8_t hall_state;             /* Current Hall state (1 to 6) */
     bool fault_active;              /* L6230 DIAG line active (low) */
     float optical_rpm;              /* Measured mechanical speed from photodetector tachometer (RPM) */

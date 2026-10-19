@@ -80,6 +80,13 @@ void IHM07M1_Init(void) {
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2);
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3);
 
+    /* Configure Master Trigger Output (TRGO) on Update Event for Injected ADC synchronization */
+    TIM_MasterConfigTypeDef sMasterConfig = {0};
+    sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+    sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+    sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+    HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig);
+
     /* Configure Hardware Break Input (BKIN) from L6230 DIAG with 1.5 us digital filter */
     TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
     sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
@@ -185,7 +192,7 @@ void IHM07M1_Init(void) {
     hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
     hadc1.Init.Resolution = ADC_RESOLUTION_12B;
     hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-    hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+    hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
     hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
     hadc1.Init.LowPowerAutoWait = DISABLE;
     hadc1.Init.ContinuousConvMode = DISABLE;
@@ -206,6 +213,48 @@ void IHM07M1_Init(void) {
     while (!LL_ADC_IsActiveFlag_ADRDY(hadc1.Instance)) {
         LL_ADC_Enable(hadc1.Instance);
     }
+
+    /* Pre-configure channel sampling times */
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_CURR_A_CH, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_CURR_B_CH, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_CURR_C_CH, LL_ADC_SAMPLINGTIME_6CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_VBUS_CH, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_TEMP_CH, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_POT_CH, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+
+    /* Configure ADC1 Injected Group for 3-Shunt Current Sampling (TIM1 TRGO Triggered) */
+    ADC_InjectionConfTypeDef sConfigInjected = {0};
+    sConfigInjected.InjectedNbrOfConversion = 3;
+    sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
+    sConfigInjected.AutoInjectedConv = DISABLE;
+    sConfigInjected.QueueInjectedContext = DISABLE;
+    sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO;
+    sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
+    sConfigInjected.InjecOversamplingMode = DISABLE;
+    sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
+    sConfigInjected.InjectedOffsetNumber = ADC_OFFSET_NONE;
+    sConfigInjected.InjectedOffset = 0;
+
+    /* Rank 1: Phase A (PA0 / ADC1_IN1) */
+    sConfigInjected.InjectedChannel = IHM07M1_ADC_CURR_A_CH;
+    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_1;
+    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
+    HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected);
+
+    /* Rank 2: Phase B (PC1 / ADC1_IN7) */
+    sConfigInjected.InjectedChannel = IHM07M1_ADC_CURR_B_CH;
+    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_2;
+    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
+    HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected);
+
+    /* Rank 3: Phase C (PC0 / ADC1_IN6) */
+    sConfigInjected.InjectedChannel = IHM07M1_ADC_CURR_C_CH;
+    sConfigInjected.InjectedRank = ADC_INJECTED_RANK_3;
+    sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_6CYCLES_5;
+    HAL_ADCEx_InjectedConfigChannel(&hadc1, &sConfigInjected);
+
+    /* Arm Injected ADC conversions triggered on TIM1 TRGO */
+    IHM07M1_StartInjectedSampling();
 }
 
 /**
@@ -260,6 +309,7 @@ void IHM07M1_SetPWM(uint16_t duty_u, uint16_t duty_v, uint16_t duty_w) {
  */
 void IHM07M1_StartPWM(void) {
     __HAL_TIM_CLEAR_FLAG(&htim1, TIM_FLAG_UPDATE);
+    IHM07M1_StartInjectedSampling();
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
@@ -357,13 +407,19 @@ uint8_t IHM07M1_ReadHallSensors(void) {
 /**
  * @brief Read an ADC channel synchronously using LL macros without HAL_GetTick dependency
  */
+static uint16_t s_injected_offset_a = 2048;
+static uint16_t s_injected_offset_b = 2048;
+static uint16_t s_injected_offset_c = 2048;
+
+/**
+ * @brief Read an ADC channel synchronously using LL macros without HAL_GetTick dependency
+ */
 static uint16_t IHM07M1_ReadADCChannel(uint32_t channel) {
     if (!LL_ADC_IsEnabled(hadc1.Instance)) {
         return 0;
     }
 
     LL_ADC_REG_SetSequencerRanks(hadc1.Instance, LL_ADC_REG_RANK_1, channel);
-    LL_ADC_SetChannelSamplingTime(hadc1.Instance, channel, LL_ADC_SAMPLINGTIME_47CYCLES_5);
 
     LL_ADC_ClearFlag_EOC(hadc1.Instance);
     LL_ADC_ClearFlag_EOS(hadc1.Instance);
@@ -421,9 +477,53 @@ void IHM07M1_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uin
         for (volatile int wait = 0; wait < 100; wait++);
     }
 
-    if (offset_a) *offset_a = (uint16_t)(sum_a / num_samples);
-    if (offset_b) *offset_b = (uint16_t)(sum_b / num_samples);
-    if (offset_c) *offset_c = (uint16_t)(sum_c / num_samples);
+    s_injected_offset_a = (uint16_t)(sum_a / num_samples);
+    s_injected_offset_b = (uint16_t)(sum_b / num_samples);
+    s_injected_offset_c = (uint16_t)(sum_c / num_samples);
+
+    if (offset_a) *offset_a = s_injected_offset_a;
+    if (offset_b) *offset_b = s_injected_offset_b;
+    if (offset_c) *offset_c = s_injected_offset_c;
+}
+
+/**
+ * @brief Arm / Start continuous hardware-triggered ADC1 injected conversions
+ */
+void IHM07M1_StartInjectedSampling(void) {
+    LL_ADC_ClearFlag_JEOC(hadc1.Instance);
+    LL_ADC_ClearFlag_JEOS(hadc1.Instance);
+    HAL_ADCEx_InjectedStart(&hadc1);
+}
+
+/**
+ * @brief Retrieve synchronized 3-shunt currents sampled at PWM valley
+ * @param ia Phase A current in Amperes
+ * @param ib Phase B current in Amperes
+ * @param ic Phase C current in Amperes
+ */
+void IHM07M1_GetInjectedCurrents(float* ia, float* ib, float* ic) {
+    /* Poll JEOS flag with short timeout (~400 loop spins = ~2.5 us) */
+    uint32_t timeout = 400;
+    while (!LL_ADC_IsActiveFlag_JEOS(hadc1.Instance)) {
+        if (--timeout == 0) break;
+    }
+    if (LL_ADC_IsActiveFlag_JEOS(hadc1.Instance)) {
+        LL_ADC_ClearFlag_JEOS(hadc1.Instance);
+    }
+
+    uint16_t raw_a = (uint16_t)hadc1.Instance->JDR1;
+    uint16_t raw_b = (uint16_t)hadc1.Instance->JDR2;
+    uint16_t raw_c = (uint16_t)hadc1.Instance->JDR3;
+
+    int32_t diff_a = (int32_t)raw_a - (int32_t)s_injected_offset_a;
+    int32_t diff_b = (int32_t)raw_b - (int32_t)s_injected_offset_b;
+    int32_t diff_c = (int32_t)raw_c - (int32_t)s_injected_offset_c;
+
+    const float lsb_to_amps = (3.3f / 4095.0f) / IHM07M1_CURRENT_SENSE_GAIN;
+
+    if (ia) *ia = (float)diff_a * lsb_to_amps;
+    if (ib) *ib = (float)diff_b * lsb_to_amps;
+    if (ic) *ic = (float)diff_c * lsb_to_amps;
 }
 
 static const PowerStageCapabilities_t s_ihm07m1_caps = {
@@ -466,4 +566,5 @@ float PowerStage_ReadTemperature(void) { return IHM07M1_ReadTemperature(); }
 float PowerStage_ReadPotentiometer(void) { return IHM07M1_ReadPotentiometer(); }
 void PowerStage_ReadRawCurrentSensors(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_ReadRawCurrentSensors(a, b, c); }
 void PowerStage_CalibrateCurrentOffsets(uint16_t* a, uint16_t* b, uint16_t* c) { IHM07M1_CalibrateCurrentOffsets(a, b, c); }
+void PowerStage_GetInjectedCurrents(float* a, float* b, float* c) { IHM07M1_GetInjectedCurrents(a, b, c); }
 #endif

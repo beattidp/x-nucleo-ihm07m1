@@ -212,8 +212,8 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Target / Estimated Speed   : \r\n");
     printf(" Commanded Torque Limit     : \r\n");
     printf(" Active Modulated Duty      : \r\n");
-    printf(" Phase Currents (mA)        : \r\n");
-    printf(" Hardware Break Trip Limit  : \r\n");
+    printf(" Phase & FOC Currents (mA)  : \r\n");
+    printf(" HW Trip Limit & Peak Curr  : \r\n");
     printf("  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  \r\n");
     printf("  [[ / ]] Duty     | [S<rpm>] Speed| [B] Brake     | [Z] Zero Rev | [R] Reset\r\n");
     printf("==============================================================================\r\n");
@@ -281,6 +281,8 @@ typedef struct {
     int ib_ma;
     int ic_ma;
     int ipk_ma;
+    int id_ma;
+    int iq_ma;
     float current_limit_amps;
 } MainShadow_t;
 
@@ -483,28 +485,33 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
         s_main_shadow.duty_pct = ctrl->duty_pct;
     }
 
-    /* 14. Phase Currents (mA): Row 24, Col 31 */
+    /* 14. Phase & FOC DQ Currents (mA): Row 24, Col 31 */
     int ia_ma = (int)(telem->current_a_amps * 1000.0f);
     int ib_ma = (int)(telem->current_b_amps * 1000.0f);
     int ic_ma = (int)(telem->current_c_amps * 1000.0f);
     int ipk_ma = (int)(telem->current_peak_amps * 1000.0f);
+    int id_ma = (int)(telem->id_amps * 1000.0f);
+    int iq_ma = (int)(telem->iq_amps * 1000.0f);
     if (!s_main_shadow.valid || abs(ia_ma - s_main_shadow.ia_ma) >= 5 ||
         abs(ib_ma - s_main_shadow.ib_ma) >= 5 || abs(ic_ma - s_main_shadow.ic_ma) >= 5 ||
-        abs(ipk_ma - s_main_shadow.ipk_ma) >= 5) {
-        printf("\033[24;31HIA=%4d mA | IB=%4d mA | IC=%4d mA [Pk=%4d mA]",
-               ia_ma, ib_ma, ic_ma, ipk_ma);
+        abs(id_ma - s_main_shadow.id_ma) >= 5 || abs(iq_ma - s_main_shadow.iq_ma) >= 5) {
+        printf("\033[24;31HIA=%4d IB=%4d IC=%4d | Id=%4d Iq=%4d mA  ",
+               ia_ma, ib_ma, ic_ma, id_ma, iq_ma);
         s_main_shadow.ia_ma = ia_ma;
         s_main_shadow.ib_ma = ib_ma;
         s_main_shadow.ic_ma = ic_ma;
-        s_main_shadow.ipk_ma = ipk_ma;
+        s_main_shadow.id_ma = id_ma;
+        s_main_shadow.iq_ma = iq_ma;
     }
 
-    /* 15. Hardware Break Trip Limit: Row 25, Col 31 */
-    if (!s_main_shadow.valid || fabsf(ctrl->current_limit_amps - s_main_shadow.current_limit_amps) >= 0.05f) {
+    /* 15. Hardware Break Trip Limit & Peak Current: Row 25, Col 31 */
+    if (!s_main_shadow.valid || fabsf(ctrl->current_limit_amps - s_main_shadow.current_limit_amps) >= 0.05f ||
+        abs(ipk_ma - s_main_shadow.ipk_ma) >= 5) {
         const char* drv_name = (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230";
-        printf("\033[25;31H%.2f A (%s OCD Break)          ",
-               ctrl->current_limit_amps, drv_name);
+        printf("\033[25;31H%.2f A (%s OCD) | Peak: %4d mA  ",
+               ctrl->current_limit_amps, drv_name, ipk_ma);
         s_main_shadow.current_limit_amps = ctrl->current_limit_amps;
+        s_main_shadow.ipk_ma = ipk_ma;
     }
 
     /* Cleanly park cursor below dashboard and flush immediately */

@@ -116,4 +116,5 @@ float PowerStage_ReadTemperature(void) { return IHM08M1_ReadTemperature(); }
 float PowerStage_ReadPotentiometer(void) { return IHM08M1_ReadPotentiometer(); }
 void PowerStage_ReadRawCurrentSensors(uint16_t* a, uint16_t* b, uint16_t* c) { IHM08M1_ReadRawCurrentSensors(a, b, c); }
 void PowerStage_CalibrateCurrentOffsets(uint16_t* a, uint16_t* b, uint16_t* c) { IHM08M1_CalibrateCurrentOffsets(a, b, c); }
+void PowerStage_GetInjectedCurrents(float* ia, float* ib, float* ic) { if (ia) *ia = 0.0f; if (ib) *ib = 0.0f; if (ic) *ic = 0.0f; }
 #endif

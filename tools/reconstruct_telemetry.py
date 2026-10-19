@@ -73,6 +73,8 @@ class TelemetryReconstructor:
             "ib_ma": None,
             "ic_ma": None,
             "ipk_ma": None,
+            "id_ma": None,
+            "iq_ma": None,
             "hw_limit_amps": None,
         }
         self.samples = []
@@ -208,17 +210,24 @@ class TelemetryReconstructor:
                 self.state["base_duty_pct"] = float(m.group(2))
 
         elif tag == "currents":
-            m = re.search(r"IA=\s*(-?\d+)\s*mA\s+\|\s*IB=\s*(-?\d+)\s*mA\s+\|\s*IC=\s*(-?\d+)\s*mA\s+\[Pk=\s*(-?\d+)\s*mA\]", clean_text)
+            m = re.search(r"IA=\s*(-?\d+)\s*(?:mA\s*\|\s*)?IB=\s*(-?\d+)\s*(?:mA\s*\|\s*)?IC=\s*(-?\d+)(?:\s*mA)?(?:\s*\[Pk=\s*(-?\d+)(?:\s*mA)?\])?(?:\s*\|\s*Id=\s*(-?\d+)\s*Iq=\s*(-?\d+))?", clean_text)
             if m:
                 self.state["ia_ma"] = int(m.group(1))
                 self.state["ib_ma"] = int(m.group(2))
                 self.state["ic_ma"] = int(m.group(3))
-                self.state["ipk_ma"] = int(m.group(4))
+                if m.group(4) is not None:
+                    self.state["ipk_ma"] = int(m.group(4))
+                if m.group(5) is not None:
+                    self.state["id_ma"] = int(m.group(5))
+                if m.group(6) is not None:
+                    self.state["iq_ma"] = int(m.group(6))
 
         elif tag == "hw_trip_limit":
-            m = re.search(r"([0-9.]+)\s*A", clean_text)
+            m = re.search(r"([0-9.]+)\s*A(?:\s*\([^)]+\))?(?:\s*\|\s*Peak:\s*(-?\d+)\s*mA)?", clean_text)
             if m:
                 self.state["hw_limit_amps"] = float(m.group(1))
+                if m.group(2) is not None:
+                    self.state["ipk_ma"] = int(m.group(2))
 
     def _record_event(self, event_type, details):
         sample = self.state["sample_num"] if self.state["sample_num"] is not None else 0
@@ -259,7 +268,7 @@ def export_csv(samples, csv_path):
         "motor_state", "control_mode", "profile_name",
         "target_rpm", "est_rpm", "real_rpm", "optical_rpm", "optical_revs", "optical_status",
         "direction", "torque_limit_amps", "active_duty_pct", "base_duty_pct",
-        "ia_ma", "ib_ma", "ic_ma", "ipk_ma", "hw_limit_amps"
+        "ia_ma", "ib_ma", "ic_ma", "ipk_ma", "id_ma", "iq_ma", "hw_limit_amps"
     ]
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
