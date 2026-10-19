@@ -295,4 +295,45 @@ $$\text{RPM}_k = 48 \times (\text{Cell Count}) \times \frac{k(k+1)}{2}$$
    - Stepping to **20V (5S)** increases the sinusoidal phase ceiling to $10.0\text{ V}$, enabling operation up to $\approx 3,600\text{ RPM}$.
    - Stepping to **24V (6S)** increases the sinusoidal phase ceiling to $12.0\text{ V}$, allowing operation up to $\approx 4,320\text{ RPM}$ (and up to 6,048 RPM with space vector modulation / field weakening).
 
+---
+
+## 10. 20V (5S) Multi-Stage Speed Ladder & Tri-Voltage Comparative Dynamics
+
+### 10.1 Empirical 20V (5S) Speed Ladder Analysis (`test_runs/run_20261018_215310.csv`)
+- **Supply Voltage**: 20.20 V VBUS (Current limit set at 2.2 A).
+- **Active Profile**: Profile 2 (FlyCat 5010-360KV, 7 PP, 12.0% Base Duty $\to V_{\text{boost}} = 2.42\text{ V}$).
+- **Total Revolutions Counted**: **2,065 revs**.
+- **Samples Captured**: 370 synchronized frames.
+
+| Step | Commanded RPM | Est Speed | Optical Speed | Duty % | Running Peak Current | Synchronism & Behavior |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---|
+| **Step 1** | 240 RPM | 240 RPM | 431 RPM | 14.6% | 83 mA (Pk max 896 mA) | Initial ramp & low-speed alignment |
+| **Step 2** | 720 RPM | 720 RPM | 716 RPM | 20.8% | 121 mA (Pk max 1251 mA) | Ramped smoothly; transient optical harmonic |
+| **Step 3** | 1440 RPM | 1440 RPM | **1440 RPM** | 29.6% | 196 mA (Pk max 1343 mA) | **Locked at 1440 RPM**: Exact 1:1 match |
+| **Step 4** | 2400 RPM | 2400 RPM | **2400 RPM** | 41.2% | 147 mA (Steady ~20 mA) | **Flawless Sync Lock**: Pure synchronism at 2400 RPM |
+| **Step 5** | 3600 RPM | 3184 RPM | **3175 RPM** | 55.8% | 157 mA (Surge to 1822 mA) | Ramped smoothly through 3184 RPM; tripped at 371.5 Hz |
+
+### 10.2 Tri-Voltage Benchmark Comparison: 12V (3S) vs 16V (4S) vs 20V (5S)
+
+| Metric | 12V (3S) Test | 16V (4S) Test | 20V (5S) Test | Trend & Physical Significance |
+|:---|:---:|:---:|:---:|:---|
+| **Supply Voltage ($V_{\text{BUS}}$)** | 12.13 V | 16.16 V | 20.20 V | Progressive +4V (~1S) increments |
+| **Total Mechanical Revolutions** | 1,284 revs | 1,609 revs | **2,065 revs** | Higher bus voltage sustains longer runs |
+| **Highest Sustained Locked Speed** | 2,160 RPM | 2,880 RPM | **2,400 RPM** (tracking to 3,184 RPM) | Unlocked 2,880 RPM cleanly on 16V |
+| **Maximum Reached Speed** | 2,695 RPM | 3,060 RPM | **3,184 RPM** | Maximum speed scales directly with $V_{\text{BUS}}$ |
+| **Max Electrical Frequency ($f_{\text{elec}}$)** | 314.4 Hz | 357.0 Hz | **371.5 Hz** | High electrical frequency boundary |
+| **Duty Cycle at Trip Point** | 80.1% | 68.0% | **55.8%** | Headroom available; current surge limits open-loop V/F |
+| **Trip Peak Current ($I_{\text{pk}}$)** | 836 mA | 154 mA (instant) | **1,822 mA** | Reactive surge trips hardware break |
+
+### 10.3 The Open-Loop Stability Barrier (~370 Hz Electrical)
+Notice the progressive shift in trip mechanism:
+1. **At 12V**: Trip occurred at **80.1% duty** because back-EMF exhausted the available DC bus voltage entirely.
+2. **At 16V**: Trip occurred at **68.0% duty** (3,060 RPM) as back-EMF exceeded the linear sinusoidal modulation limit ($V_{\text{BEMF}} > \frac{V_{\text{BUS}}}{2}$).
+3. **At 20V**: Duty at trip was only **55.8%**, meaning plenty of DC bus voltage was available ($20.20\text{ V} \times 0.558 = 11.27\text{ V}$). Yet at 3,184 RPM ($f_{\text{elec}} = 371.5\text{ Hz}$), a severe phase hunting oscillation caused phase current to spike instantly to **1.822 A**, triggering the L6230 hardware overcurrent break.
+
+**Physical Conclusion**:
+Open-loop V/F drive relies on a blind rotating voltage vector. As electrical frequency approaches $\approx 370\text{ Hz}$, the motor's power angle $\delta$ becomes underdamped (especially with no flywheel). Any minute angular perturbation causes the rotor to oscillate across the pull-out torque boundary, driving instantaneous reactive current surges. 
+This definitively validates that **Field-Oriented Control (FOC)** is required to stably cross 3,200+ RPM and reach 6,000+ RPM at 24V.
+
+
 
