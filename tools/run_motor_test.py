@@ -46,6 +46,7 @@ def ensure_stopped(session_id):
 VOLTAGE_LADDERS = {
     12: [144, 432, 864, 1440, 2160, 3024],
     16: [192, 576, 1152, 1920, 2880, 4032],
+    20: [240, 720, 1440, 2400, 3600, 5040],
     24: [288, 864, 1728, 2880, 4320, 6048]
 }
 
@@ -71,8 +72,10 @@ def resolve_voltage_targets(vbus_v, bidirectional=True):
     """Selects speed target ladder based on measured bus voltage."""
     if vbus_v < 14.0:
         nom_v = 12
-    elif vbus_v < 20.0:
+    elif vbus_v < 18.0:
         nom_v = 16
+    elif vbus_v < 22.0:
+        nom_v = 20
     else:
         nom_v = 24
 
@@ -119,6 +122,31 @@ def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
     print("Zeroing optical revolution counter...")
     send_keystroke(session_id, "z")
     time.sleep(0.1)
+
+
+def check_log_fault(log_file):
+    if not os.path.exists(log_file):
+        return False
+    try:
+        with open(log_file, "rb") as f:
+            size = os.path.getsize(log_file)
+            f.seek(max(0, size - 4096))
+            tail = f.read().decode("utf-8", errors="replace")
+            if "FAULT / OVERCURRENT TRIPPED" in tail or "Drive State                : FAULT" in tail:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def wait_step_duration(session_id, log_file, duration_s):
+    t_end = time.time() + duration_s
+    while time.time() < t_end:
+        time.sleep(min(1.0, max(0.1, t_end - time.time())))
+        if check_log_fault(log_file):
+            print("\n[!] DRIVER FAULT DETECTED IN STREAM! Aborting remaining steps early...")
+            return False
+    return True
 
 
 def analyze_test_run(samples, events):
@@ -298,11 +326,12 @@ def main():
         print(f"Commanding MOTOR START (SPACE) -- Running Step 1: {speed_steps[0]} RPM for {args.step_duration:.1f}s...")
         send_keystroke(session_id, "space")
         try:
-            time.sleep(args.step_duration)
-            for idx, target in enumerate(speed_steps[1:], start=2):
-                print(f"Stepping speed to {target} RPM (Step {idx}/{len(speed_steps)}) -- Holding for {args.step_duration:.1f}s...")
-                adjust_target_rpm(session_id, target)
-                time.sleep(args.step_duration)
+            if wait_step_duration(session_id, log_file, args.step_duration):
+                for idx, target in enumerate(speed_steps[1:], start=2):
+                    print(f"Stepping speed to {target} RPM (Step {idx}/{len(speed_steps)}) -- Holding for {args.step_duration:.1f}s...")
+                    adjust_target_rpm(session_id, target)
+                    if not wait_step_duration(session_id, log_file, args.step_duration):
+                        break
         finally:
             print("Commanding MOTOR STOP (SPACE)...")
             send_keystroke(session_id, "space")
