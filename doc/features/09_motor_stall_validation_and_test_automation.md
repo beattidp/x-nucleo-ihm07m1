@@ -335,5 +335,52 @@ Notice the progressive shift in trip mechanism:
 Open-loop V/F drive relies on a blind rotating voltage vector. As electrical frequency approaches $\approx 370\text{ Hz}$, the motor's power angle $\delta$ becomes underdamped (especially with no flywheel). Any minute angular perturbation causes the rotor to oscillate across the pull-out torque boundary, driving instantaneous reactive current surges. 
 This definitively validates that **Field-Oriented Control (FOC)** is required to stably cross 3,200+ RPM and reach 6,000+ RPM at 24V.
 
+---
+
+## 11. 24V (6S) Speed Ladder Analysis & Quad-Voltage Dataset Benchmark
+
+### 11.1 Empirical 24V (6S) Speed Ladder Analysis (`test_runs/run_20261018_215731.csv`)
+- **Supply Voltage**: 24.25 V VBUS (Current limit set at 2.2 A).
+- **Active Profile**: Profile 2 (FlyCat 5010-360KV, 7 PP, 12.0% Base Duty $\to V_{\text{boost}} = 2.91\text{ V}$).
+- **Total Revolutions Counted**: **2,993 revs**.
+- **Samples Captured**: 450 synchronized frames.
+
+| Step | Commanded RPM | Est Speed | Optical Speed | Duty % | Running Peak Current | Synchronism & Behavior |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---|
+| **Step 1** | 288 RPM | 288 RPM | 304 RPM | 14.7% | 107 mA (Pk max 1273 mA) | Initial ramp & alignment |
+| **Step 2** | 864 RPM | 864 RPM | **864 RPM** | 20.9% | 149 mA (Pk max 1532 mA) | **Locked at 864 RPM**: Solid 1:1 sync |
+| **Step 3** | 1728 RPM | 1728 RPM | **1728 RPM** | 29.5% | 255 mA (Pk max 1760 mA) | **Locked at 1728 RPM**: Solid 1:1 sync |
+| **Step 4** | 2880 RPM | 2880 RPM | **2880 RPM** | 41.1% | 275 mA (Pk max 1782 mA) | **Locked at 2880 RPM**: Solid 1:1 sync |
+| **Step 5** | 4320 RPM | 4005 RPM | **4003 RPM** | 51.5% $\to$ 58.1% | 180 mA (Transient 1208 mA) | Ramped in continuous sync to **4,013 RPM** ($468.2\text{ Hz}$) |
+
+### 11.2 Comprehensive Quad-Voltage Comparative Benchmark (3S / 4S / 5S / 6S)
+
+Across all four testing sessions, the motor fixture completed **7,951 total mechanical revolutions** without the flywheel installed:
+
+| Metric | 12V (3S) Run | 16V (4S) Run | 20V (5S) Run | 24V (6S) Run | Scaling Behavior & Physics |
+|:---|:---:|:---:|:---:|:---:|:---|
+| **Measured $V_{\text{BUS}}$** | 12.13 V | 16.17 V | 20.19 V | **24.25 V** | +4.0 V per pack cell (~4.0V/cell) |
+| **Total Revolutions** | 1,284 revs | 1,609 revs | 2,065 revs | **2,993 revs** | Total across suite: **7,951 revs** |
+| **Target Step Range** | `[144..3024]` | `[192..4032]` | `[240..5040]` | `[288..6048]` | $48 \times (\text{Cells}) \times \frac{k(k+1)}{2}$ |
+| **Sustained Locked Plateaus** | 144, 432, 864, 1440, 2160 | 576, 1152, 1920, 2880 | 1440, 2400 | **864, 1728, 2880, 4003** | Speed plateaus scale directly with voltage |
+| **Maximum Reached Speed** | 2,695 RPM | 3,069 RPM | 3,175 RPM | **4,013 RPM** | Linear scaling with $V_{\text{BUS}}$ |
+| **Peak Electrical Frequency** | 314.4 Hz | 358.1 Hz | 370.4 Hz | **468.2 Hz** | Rotor turns at **66.9 revs/second** |
+| **Back-EMF at Max Speed** | 7.49 V | 8.53 V | 8.82 V | **11.15 V** | Tracks $V_{\text{BEMF}} = \text{RPM} / 360$ |
+| **Sinusoidal Half-Bridge Limit** | 6.07 V | 8.08 V | 10.10 V | **12.13 V** | $V_{\max} = V_{\text{BUS}} / 2$ |
+| **Duty Cycle at Trip Point** | 80.1% | 68.0% | 55.8% | **58.1%** | Voltage headroom exists; current phase limits open loop |
+| **Overall Peak Phase Current** | 1,434 mA | 1,545 mA | 1,822 mA | **1,782 mA** | Within 2.2A hardware break threshold |
+
+### 11.3 Key Architectural Conclusions for the Roadmap
+1. **Empirical Voltage Ceiling**:
+   - The motor speed successfully scaled from 2,695 RPM at 12V to **4,013 RPM at 24V**.
+   - Operating at 4,013 RPM corresponds to **468.2 Hz electrical frequency** and **66.9 mechanical revolutions per second**, verified by the optical photodetector.
+2. **Open-Loop V/F Demarcation Point**:
+   - Open-loop sinusoidal V/F is proven stable and reliable up to **~400 Hz electrical** (~3,400 RPM for 7 pole pairs).
+   - Approaching and exceeding 400 Hz electrical, inductive phase lag ($\phi = \arctan(\omega_e L_s / R_s)$) and lack of rotor angle feedback lead to reactive torque oscillations.
+3. **Transition to Stage 3: Field-Oriented Control (FOC)**:
+   - With FOC, the phase angle $\theta_e$ is tied directly to the rotor flux vector, and stator currents $I_d, I_q$ are decoupled and regulated by high-speed PI loops.
+   - This eliminates reactive phase oscillations, enables field-weakening above base speed, and will allow the motor to stably reach and exceed **6,000 RPM** on the 24V bus.
+
+
 
 
