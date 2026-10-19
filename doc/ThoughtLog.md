@@ -1,7 +1,7 @@
 # Agent Thought & Analysis Log
 
 > **Session ID:** `37b40c6c-d5e5-45f3-9a6d-609f7e0515bd`  
-> **Last Synced:** 2026-10-18 16:08:42 MDT  
+> **Last Synced:** 2026-10-18 19:43:36 MDT  
 > **Description:** Chronological log of the AI agent's internal reasoning ("thought for {n} seconds"), timestamps, and operational actions captured from conversation transcripts.
 
 ---
@@ -895,5 +895,253 @@
 
 **Internal Chain-of-Thought:**
 > Automating the BLDC motor test process requires documenting the architecture of the automated runner, which includes telemetry parsing, console management, and keystroke injection. This documentation needs to cover the "ramp-up then stall and vibrate" phenomenon, and will likely involve mathematical analysis for validation, specifically focusing on the identification of the 12N14P configuration. The primary goal is to provide a complete, documented automation solution for motor stall validation.
+
+### Step 597 — Analysis (2026-10-18 16:09:02 MDT)
+**Internal Chain-of-Thought:**
+> Observed the "ramp up, stall, vibrate" behavior is confirmed. Automated testing revealed the primary cause is the incorrect 12N14P motor configuration, which was doubling the electrical field rotation speed. Further testing indicated the acceleration profile's abrupt change to zero at the target speed also contributes to the issue, causing flywheel inertia overshoot.
+
+---
+
+## Turn 4: User Request
+**Timestamp:** `2026-10-18 19:32:19 MDT`
+
+**Prompt:**
+> As far as I know, the fixture only generates one falling-edge pulse per revolution.  Either something is wrong with the trigger to read the pulse, or the revolutions are not being calculated correctly.  Using an oscilloscope attached to the optical pulse signal, I see the console showing 350 RPM but the pulse is 11.7 Hz which multiplied by seconds per minute shows 702 RPM - twice the speed at which the console assumes.
+
+### Step 599 — Analysis (2026-10-18 19:32:20 MDT)
+**Action Taken:** `view_file` (Viewing TIM1 configuration in ihm07m1.c)
+
+**Internal Chain-of-Thought:**
+> The fixture's single pulse per revolution suggests either a trigger malfunction or an RPM calculation error. Oscilloscope data reveals a discrepancy: the console displays 350 RPM while the 11.7 Hz pulse rate implies 702 RPM. This discrepancy requires further investigation to determine the root cause of the incorrect RPM readings.
+>
+>
+> The single pulse per revolution finding confirms the `OPTICAL_PULSES_PER_REV` setting. The observed 702 RPM mechanical speed, indicated by the 11.7 Hz pulse, contradicts the 350 RPM console reading, representing twice the expected speed.  Using the motor drive frequency formula, the discrepancy points towards an error in RPM calculation due to the pole pairs setting. If `pole_pairs` is correct at 7, the firmware's frequency calculation must be investigated when the console targets 350 RPM to understand why the implied RPM is double the set speed.
+
+### Step 601 — Analysis (2026-10-18 19:32:33 MDT)
+**Action Taken:** `view_file` (Viewing TIM2 input capture configuration)
+
+**Internal Chain-of-Thought:**
+> Center-aligned mode 1 with a zero repetition counter suggests the update interrupt should trigger at the counter's overflow and underflow events. The `TIM_IT_UPDATE` flag's behavior is expected to be directly tied to these events, meaning it'll be asserted twice per complete cycle of the timer, once on overflow and once on underflow.
+>
+>
+> The update event occurs at both the counter's overflow and underflow, doubling the interrupt frequency to 40 kHz, not 20 kHz. The PWM period calculation confirms a 20 kHz PWM frequency, but with the interrupt triggered twice per cycle, the interrupt service routine (ISR) is called at 40 kHz. The phase step calculation in the code assumes a 20 kHz ISR frequency, meaning the phase accumulator advances at double the intended rate.
+>
+>
+> The observed doubling of the motor speed is precisely validated by the calculated electrical frequency and pole pair count, confirming the ISR executes at double the expected frequency. This calculation accurately predicts the 11.7 Hz pulse frequency observed on the oscilloscope. This result confirms that the photodetector provides one pulse per motor revolution. The center-aligned mode and zero repetition counter configuration of the timer causes the update interrupt to be triggered twice per PWM cycle, validating the doubling effect.
+>
+>
+> The ISR executes at 40 kHz due to the update event occurring twice per PWM cycle, leading to the phase accumulator doubling its rate, causing the motor to spin at twice the intended speed. The tachometer readings align, with the sensor providing one pulse per revolution, confirming the 40 kHz ISR rate. Analyzing `RepetitionCounter` in center-aligned mode might resolve the doubled frequency, with `RCR = 1` generating update events only once per PWM period.
+>
+>
+> Analyzing the `RepetitionCounter` (RCR) suggests two options: setting RCR to 1 reduces the interrupt frequency to 20 kHz, or keeping RCR at 0 and updating at 40 kHz while adjusting the phase step calculation. Updating at 40 kHz provides higher resolution and lower distortion, though preload enables updates at every UEV. Examining the code, `AutoReloadPreload` is enabled for TIM1 channels, causing CCR updates at crest and valley (40 kHz) if the update event happens at that rate. The user confirms one optical pulse per revolution.
+>
+>
+> Verifying the optical tachometer code confirms one pulse per revolution, validating the 702 RPM reading at 11.7 Hz. The root cause of the doubled speed lies in the phase step calculation. The phase step is designed for a 20 kHz interrupt, yet the interrupt is actually running at 40 kHz due to the timer's center-aligned mode and zero repetition counter. This effectively doubles the phase accumulator's increment rate, leading to twice the intended motor speed. The doubled frequency explains why the motor spins at twice the commanded speed.
+>
+>
+> Examining the timer's center-aligned mode and a repetition counter of zero confirms the update event triggers on both overflow and underflow, resulting in a 40 kHz interrupt rate. This doubles the interrupt frequency compared to the 20 kHz PWM frequency, triggering the `TIM1_UP` interrupt twice per PWM cycle.
+>
+> Two solutions emerge: setting the repetition counter to 1, reducing the interrupt to 20 kHz, or keeping it at 0 and adjusting the phase step calculation for the 40 kHz rate. Setting `RepetitionCounter` to 1 reduces interrupt frequency but might change timing behavior, whereas keeping `RepetitionCounter` at zero might result in more resolution.
+>
+>
+> With `RepetitionCounter = 1`, the update interrupt should fire only once per PWM cycle at the valley, at 20 kHz. The `RepetitionCounter = 1` configuration ensures the 20 kHz ISR interrupt rate is aligned with the phase step calculation. This confirms the timing calculations in the motor control code, as the value `214748.3648f` is used in multiple places, where `214748.3648f` = $\frac{2^{32}}{20000}$! Further investigation is needed to verify the timer frequency when `RepetitionCounter` is set to 1 or 0.
+>
+>
+> With the repetition counter (RCR) at 1, the update event frequency aligns with the 20 kHz PWM period, occurring at 20 kHz, only on the trough. RCR = 0 leads to update events at 40 kHz (both crest and trough), which doubled the motor speed. The optical pulses per revolution were confirmed to be 1 pulse per revolution at 702 RPM. At 350 RPM with RCR = 1, the motor should spin at 350 RPM with a 5.83 Hz pulse frequency. The console display and pulse frequency indicate the user saw the motor at double the commanded speed.
+
+### Step 603 — Analysis (2026-10-18 19:33:12 MDT)
+**Action Taken:** `grep_search` (Searching for htim1 in src)
+
+**Internal Chain-of-Thought:**
+> Analyzing the timer configuration (TIM2), the clock frequency is 170 MHz and the prescaler is 169, resulting in a 1.000 MHz tick (1.000 µs per tick). Examining the interrupt handler (`TIM2_IRQHandler`) and its associated ISR (`Motor_OpticalCaptureISR`), the time difference (`dt`) calculation uses the timer capture value, which is then verified as microseconds.
+> Verifying the delta time at 11.7 Hz on the scope is the next required step.
+>
+>
+> The observed 11.7 Hz pulse, corresponding to 702 RPM, contradicts the console's displayed 350 RPM reading. The discrepancy stems from the `active_freq` calculation, which is based on the console's incorrect RPM value, affecting the `s_phase_accum` update frequency. The issue occurs because the timer generates interrupts at both overflow and underflow, doubling the effective update frequency, thus doubling the perceived RPM.
+>
+>
+> The observed 11.7 Hz pulse directly correlates to the 700 RPM motor speed calculated from the electrical frequency and motor pole pairs. This confirms a Center-Aligned timer mode firing at twice the expected frequency, leading to an RPM calculation error and the observed 350 RPM console display. The `OPTICAL_PULSES_PER_REV` definition must be corrected from 2 to 1, given the one pulse per mechanical revolution configuration.
+
+### Step 605 — Analysis (2026-10-18 19:33:33 MDT)
+**Action Taken:** `view_file` (Viewing TIM1 init in ihm07m1.c)
+
+**Internal Chain-of-Thought:**
+> `RepetitionCounter` in `ihm07m1.c` influences the frequency; a value of 1 seems to align with the expected 20 kHz update rate in Center-Aligned Mode 1. The definition of `OPTICAL_PULSES_PER_REV` as 1 implies that each pulse corresponds to one mechanical revolution, which requires further investigation to confirm that the optical pulse count is accurately recorded. The `g_telemetry.optical_pulse_count` is being updated by `s_optical_pulse_`.
+>
+>
+>
+> Calculations confirm that with `RepetitionCounter = 1` and `OPTICAL_PULSES_PER_REV = 1`, the firmware accurately reflects target RPM at both 350 and 700 RPM. The generated electrical frequency, resulting mechanical speed, optical pulse frequency, and calculated `raw_rpm` consistently align, validating the system's behavior. Further investigation is required to ascertain if these values are consistent elsewhere in the program.
+
+### Step 613 — Analysis (2026-10-18 19:34:08 MDT)
+**Action Taken:** `replace_file_content` (Editing ihm07m1.c)
+
+**Internal Chain-of-Thought:**
+> Analyzing the debounce filter's time constraint: a 4000 µs threshold corresponds to 15,000 RPM with one pulse per revolution. At the maximum motor speed of 3000 RPM, the period is 20,000 µs, and at 6000 RPM, it's 10,000 µs. The filter's 4 ms threshold allows for speeds up to 15,000 RPM while rejecting any optical glitches or chatter under 4ms. The code confirms that there is only one optical pulse per mechanical revolution.
+
+### Step 619 — Analysis (2026-10-18 19:34:38 MDT)
+**Action Taken:** `run_command` (Running 150 RPM test with calibrated 20 kHz timing)
+
+**Internal Chain-of-Thought:**
+> Initiating automated tests for Profile 2 with RPM values of 150, 350, and 70 to verify expected oscilloscope frequency readings against console output. The RPM values are converted to Hz for expected oscilloscope readings. Expecting accurate readings on both oscilloscope and console displays.
+
+### Step 626 — Analysis (2026-10-18 19:35:21 MDT)
+**Action Taken:** `view_file` (Viewing test run CSV)
+
+**Internal Chain-of-Thought:**
+> The regular expression erroneously captured the potentiometer's target speed (300 RPM) instead of the motor's intended target speed (200 RPM). Consequently, the code incorrectly used the potentiometer value for speed adjustments. The resulting RPM adjustments were based on the incorrect target, leading to an unwanted delta. The regex needs modification to correctly target the motor speed.
+
+### Step 628 — Analysis (2026-10-18 19:35:28 MDT)
+**Action Taken:** `view_file` (Viewing Line 21 print in console.c)
+
+**Internal Chain-of-Thought:**
+> Optical sensor data indicates 8 revolutions in 5 seconds, calculating to 96 RPM. There's a significant discrepancy with the observed `real_rpm` value. This suggests a potential issue in the RPM calculation or data source.
+
+### Step 631 — Analysis (2026-10-18 19:36:05 MDT)
+**Action Taken:** `view_file` (Viewing console.c line 21 rendering)
+
+**Internal Chain-of-Thought:**
+> Line 21 shadow issue in `src/console.c` requires updating the shadow value in `Console_RenderDashboard()` at line 466 with the optical RPM to ensure clean differential updates. The target RPM parser in `tools/run_motor_test.py` also needs attention.
+
+### Step 643 — Analysis (2026-10-18 19:36:31 MDT)
+**Action Taken:** `view_file` (Viewing s_main_shadow definition in console.c)
+
+**Internal Chain-of-Thought:**
+> The code updates the RPM shadow variable correctly, confirming the optical RPM value is being set as intended. However, there may be an issue with how the actual speed and target values are handled subsequently.
+>
+>
+> It appears the update condition in Row 21 might be flawed, as `s_main_shadow.optical_rpm` is updated *before* the check using the same value, making the optical RPM update conditional almost always false after the initial update. The steady-state test further demonstrates the conditional failure; if target and actual speeds remain constant while optical RPM changes, Row 21 will not update the shadow variable unless the other conditions are met. This could mean the display update in Row 21, and by extension the logging, is not functioning as intended after the initial ramp.
+
+### Step 653 — Analysis (2026-10-18 19:36:54 MDT)
+**Action Taken:** `grep_search` (Searching for re.search in run_motor_test.py)
+
+**Internal Chain-of-Thought:**
+> The `MainShadow_t` struct appears to be the central data structure holding motor control information; adding `line21_optical_rpm` suggests a new optical RPM value will be displayed on line 21. Examining `Console_RenderDashboard` line 458, which references "Row 21," confirms a display update is underway for target/actual speed, presumably incorporating the new optical RPM value.
+
+### Step 659 — Analysis (2026-10-18 19:37:09 MDT)
+**Action Taken:** `view_file` (Viewing console.c MainShadow_t declaration)
+
+**Internal Chain-of-Thought:**
+> Previously, `real_rpm` values in the testing script might have been stale because Row 21 didn't always update. Now, with the optical RPM issue resolved, Row 21 should redraw when only the optical speed changes, and thus `real_rpm` should update as well, providing fresh data for calculations.
+
+### Step 669 — Analysis (2026-10-18 19:37:48 MDT)
+**Action Taken:** `replace_file_content` (Editing run_motor_test.py regex and optical rpm selection)
+
+**Internal Chain-of-Thought:**
+> The motor test regex requires adjustment, suspecting the current pattern might be too rigid. Examining the code, the `analyze_test_run` function appears to handle RPM data; there's a need to ensure it gracefully handles missing optical RPM values by defaulting to real RPM if necessary for both active and running samples. These changes should address potential data parsing issues.
+
+### Step 681 — Analysis (2026-10-18 19:38:32 MDT)
+**Action Taken:** `run_command` (Running automated motor test at 350 RPM)
+
+**Internal Chain-of-Thought:**
+> Observing the motor profile and current readings, the target speed is set, yet the estimated and real speeds are zero, indicating the motor isn't running. The active modulated duty is also zero, despite a base duty cycle being configured, suggesting a control issue. The bus voltage appears nominal, so power delivery is likely not the immediate problem. The focus now shifts to executing the motor test script to determine the source of the control issue, investigating specific parameters affecting motor operation.
+
+### Step 687 — Analysis (2026-10-18 19:38:57 MDT)
+**Action Taken:** `run_command` (Grepping Row 14 from raw ANSI log)
+
+**Internal Chain-of-Thought:**
+> Examining the `real_rpm` values in the specified column, the data appears to be a time-series of engine speed readings. Noticing a significant jump to 2204 in line 35. I will continue to investigate the nature of this data.
+
+### Step 689 — Analysis (2026-10-18 19:39:09 MDT)
+**Action Taken:** `view_file` (Viewing reconstruct_telemetry.py optical_tach parsing)
+
+**Internal Chain-of-Thought:**
+> Observing motor RPM data, the first sample shows expected operation at the target speed. The second sample indicates a drop in RPM with the motor reported as "STOPPED", but still rotating. The third sample shows a further RPM decrease and a "SENSORLESS MOTOR / J4 DISCONNECTED" warning, suggesting a potential sensor or connection issue.
+>
+>
+> Examining the logs, the reported optical RPM consistently shows zero across multiple samples despite the motor running and a non-zero real RPM. This discrepancy suggests the optical sensor isn't functioning or the data is not being correctly captured/reported. The test summary's revolution count also seems incorrect, as manual counting indicates a much higher number of revolutions than reported by the script. Further investigation focuses on verifying the optical sensor's connection and data logging.
+
+### Step 693 — Analysis (2026-10-18 19:39:20 MDT)
+**Action Taken:** `run_command` (Inspecting parsed coordinates in log)
+
+**Internal Chain-of-Thought:**
+> The coordinate map indicates "optical_tach" is displayed at row 14, column 31. Examining the console code reveals an ANSI escape sequence targeting that specific row. Now, verifying the data received by a component that processes telemetry, I'll need to inspect the relevant log file.
+
+### Step 697 — Analysis (2026-10-18 19:39:29 MDT)
+**Action Taken:** `view_file` (Viewing reconstruct_telemetry.py tokenizer)
+
+**Internal Chain-of-Thought:**
+> The escape character `\033` in the `status_tag` variable is likely interfering with the regular expression matching. The regex `[^\x1b]*` stops matching when it encounters the escape character, resulting in incomplete data extraction. This leads to the program only capturing partial telemetry information like " 487 RPM (Revs: 2 )", which is then improperly parsed in a separate file.
+
+### Step 701 — Analysis (2026-10-18 19:39:40 MDT)
+**Action Taken:** `run_command` (Testing stream parser fix)
+
+**Internal Chain-of-Thought:**
+> Extracting text from a stream involves identifying text segments bounded by an escape sequence. The code peeks ahead for the next escape character. If no subsequent escape sequence exists, the remainder of the data stream is considered the text. Otherwise, the text is everything up to the next escape character.
+>
+>
+> The previous method for extracting text was flawed; it prematurely terminated at any escape character, leading to incomplete field extractions and missed data.  The primary issue arises from incorrect handling of ANSI escape codes, specifically those used for formatting such as color. Analyzing the code's behavior suggests that text between cursor positioning codes represents a distinct field, which may include embedded formatting escapes. These formatting escapes can be stripped using the existing cleaning routine, leaving the pure data. I'm testing a refactored approach.
+
+### Step 717 — Analysis (2026-10-18 19:40:27 MDT)
+**Action Taken:** `grep_search` (Searching for optical tachometer logic in motor_control.c)
+
+**Internal Chain-of-Thought:**
+> Examining the data, the motor reached the target RPM (350) successfully, but I need to understand the behavior during the ramp-up phase. The focus now is to identify the cause of the observed spikes during acceleration. Investigating the time series data from lines 20-35 will likely reveal patterns or anomalies that indicate the source of those spikes.
+
+### Step 731 — Analysis (2026-10-18 19:40:55 MDT)
+**Action Taken:** `view_file` (Viewing Profile 2 configuration)
+
+**Internal Chain-of-Thought:**
+> The code filters optical capture data. If the time difference between captures is less than a threshold, the data is discarded to avoid glitches. The threshold, currently 4000 microseconds, seems intended to reject data from speeds exceeding 15,000 RPM. Calculation for 2204 RPM confirms the expected time delta of ~27223 us, which indicates the filter is active below that speed. Thus, the threshold appears to be too strict.
+
+### Step 733 — Analysis (2026-10-18 19:41:02 MDT)
+**Action Taken:** `view_file` (Viewing TIM2 setup in ihm07m1.c)
+
+**Internal Chain-of-Thought:**
+> The acceleration rate is 50 RPM/s, so reaching 350 RPM from zero takes 7 seconds, plus 1.5 seconds for alignment, totaling 8.5 seconds. With an 8-second test duration, the motor did not reach the target speed; it stopped during the starting phase. This means the motor state remained in 'STARTING' and never transitioned to 'RUNNING'.
+>
+>
+> Analyzing the provided data, the motor test script's filtering criteria require a "RUNNING" motor state, which wasn't reached in the initial 8-second test; thus, the samples were empty. A 15-second test should allow for a steady-state "RUNNING" phase at the target RPM after the ramp-up.
+>
+> Investigating the tachometer readings, I need to understand why there are spikes during ramp-up, and analyzing the optical capture interrupt service routine (ISR) provides insights into how the optical pulse count increments and when the optical readings are rejected. The CSV data shows the `optical_revs` incrementing in steps of 2 or 0, which aligns with the ISR logic.
+
+### Step 741 — Analysis (2026-10-18 19:41:43 MDT)
+**Action Taken:** `run_command` (Running 15-second automated motor test)
+
+**Internal Chain-of-Thought:**
+> Examining the interrupt service routine for optical capture, the code calculates the time difference between consecutive pulses. A check filters out time differences less than 4000 microseconds, intended to eliminate noise. The valid time difference is then stored and flagged as a new pulse.
+>
+>
+> The code's noise filtering could be masking rapid optical pulses caused by motor vibration during stalling. High RPM spikes observed in telemetry correlate with the user's description of stalling and vibration. The user's statement about observed RPM and pulse frequency further reinforces the hypothesis of vibration-induced erratic readings.
+
+### Step 747 — Analysis (2026-10-18 19:42:17 MDT)
+**Action Taken:** `run_command` (Checking git status)
+
+**Internal Chain-of-Thought:**
+> Significant discrepancy observed between the target, estimated, and real values in several consecutive runs, specifically with runs #51 and #53 displaying a drastic increase in real value. This immediately suggests a potential issue in the system's operation under the specified conditions.  The "SLIPPING / VIBRATING" status, coupled with the high real values and peak current readings in those runs, strengthens the hypothesis of mechanical malfunction.
+>
+>
+> The "SLIPPING / VIBRATING" state correlates with real speeds around 2500 RPM, which appears to be multiples of the target speed due to the motor's pole pairs. The electrical frequency, calculated from the target speed and pole pairs, yields approximately 2625 RPM, supporting the hypothesis that the motor vibrates at its electrical frequency when slipping.  Further examination shows that the real speed is a multiple, suggesting a mechanical issue causing the motor to resonate or lock to a harmonic of its intended speed.
+>
+>
+> The observed vibration frequency precisely matches the electrical drive frequency of the 7-pole motor, confirming the slipping hypothesis. High current draw during vibration versus significantly lower draw during synchronous operation further validates this. The user's assumption of vibration coinciding with the electrical drive frequency is demonstrably correct based on the data.
+>
+>
+> Initial investigation reveals a doubling of the motor speed relative to the displayed console RPM due to the `TIM1` configuration, specifically the `RepetitionCounter` setting and center-aligned mode. The discrepancy in the speed measurement is now solved by setting the `RepetitionCounter` to its correct value.
+>
+> Further review identifies a user interface rendering issue where Row 21 was not updating correctly due to a missing shadow variable. The tachometer was not parsed correctly because of the ANSI color character which then was correctly parsed.
+
+### Step 755 — Analysis (2026-10-18 19:42:45 MDT)
+**Action Taken:** `view_file` (Viewing worklog)
+
+**Internal Chain-of-Thought:**
+> Initial assumption about the optical fixture was incorrect; the documentation incorrectly stated 2 pulses per revolution. Verification against the commanded electrical speed and measured pulse periods indicates the fixture actually generates **1 pulse per mechanical revolution**. This discrepancy requires updating section 3.3 to reflect the correct relationship. This is critical for accurate speed calculations.
+
+### Step 757 — Analysis (2026-10-18 19:42:52 MDT)
+**Action Taken:** `replace_file_content` (Updating feature 09 doc)
+
+**Internal Chain-of-Thought:**
+> Updating the motor stall validation documentation with details on the "1 Pulse Per Revolution Ground Truth" and the root cause of the observed 40 kHz issue in the TIM1 center-aligned UEV. Specifically, this involves investigating and documenting the behavior of TIM1 when configured with a `RepetitionCounter`. This update ensures the feature documentation is complete and accurate. A new or appended worklog entry will be created to record the investigation and findings.
+>
+>
+> The center-aligned mode UEV unexpectedly triggered the interrupt handler at double the intended frequency due to updates occurring on both overflow and underflow, resulting in incorrect phase accumulation. This led to the motor operating at twice the commanded electrical frequency and rotor speed. Setting a repetition counter to 1 resolved the issue by ensuring only a single update event per period, thus restoring the intended 20 kHz execution rate and achieving 1:1 speed alignment.
+> I'm thinking through how to approach this.
+
+### Step 765 — Analysis (2026-10-18 19:43:18 MDT)
+**Action Taken:** `replace_file_content` (Updating worklog)
+
+**Internal Chain-of-Thought:**
+> Investigating the oscilloscope's 2x speed discrepancy, the issue seems linked to a single pulse per revolution coupled with the 40 kHz TIM1 center-aligned UEV. The observed discrepancy pointed to a potential counter configuration issue, leading to the `RepetitionCounter = 1` fix. Additionally, the console differential shadow decoupling, specifically `line21_optical_rpm`, warrants its own section.
+>
+> A fix for the telemetry reconstructor's ANSI escape sequence tokenizer is also required. Furthermore, validating Tests 9 and 10 on live hardware is planned to ensure the implemented changes function as expected.
 
 ---

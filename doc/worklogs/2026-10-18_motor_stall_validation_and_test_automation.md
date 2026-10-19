@@ -22,27 +22,30 @@
   - Scaled base duty to 12.0% for 12V VBUS supply.
 - **Implemented S-Curve Deceleration Taper (`src/motor_control.c`)**:
   - Added dynamic slew rate tapering within 40 RPM of target speed to prevent synchronous pullout caused by flywheel inertia overshoot upon arriving at steady state.
-- **Calibrated Optical Tachometer Photodetector**:
-  - Verified fixture generates 2 falling-edge pulses per mechanical revolution.
-  - Increased glitch filter to 4000 µs (15,000 RPM maximum) to reject vibration slip chatter.
-  - Scaled RPM and revolution counters by `OPTICAL_PULSES_PER_REV = 2`.
-- **Live Hardware Validation**:
-  - Validated initial stall phenomenon (Test 1-5): Motor ramped to ~100-140 RPM and then stalled into ~35 Hz slip vibration at target speed arrival.
-  - Validated corrective actions (Test 6-8):
-    - Test 6: 100 RPM, turned 9 revs, maintained steady 40-50 RPM continuous sync.
-    - Test 7: 125 RPM, turned 21 revs, maintained steady 144 RPM continuous sync.
-    - Test 8: 250 RPM (18% duty), turned 43 revs, maintained steady 263 RPM continuous sync (Max 960 mA, Avg 105 mA).
+- **Resolved Oscilloscope Double-Speed Discrepancy (40 kHz TIM1 Center-Aligned UEV Root Cause)**:
+  - User confirmed photodetector fixture strictly generates **1 pulse per revolution** (`OPTICAL_PULSES_PER_REV = 1`).
+  - Discovered that `TIM1` was configured in Center-Aligned Mode 1 with `RepetitionCounter = 0`, generating Update Events (UEV) and interrupts at **both crest and trough (40 kHz)**.
+  - The 20 kHz SPWM phase accumulator step was thus executed at 40 kHz, spinning the rotor at **2x commanded electrical speed** (commanded 350 RPM produced 700 RPM physical rotation and 11.7 Hz pulse on oscilloscope).
+  - Configured `htim1.Init.RepetitionCounter = 1` in `src/ihm07m1.c` so UEV fires once per period (20 kHz) at underflow, achieving exact 1:1 speed alignment between console command, estimated speed, optical tachometer, and oscilloscope pulse frequency.
+- **Fixed Console Differential Shadow Bug (`src/console.c`)**:
+  - Added dedicated `line21_optical_rpm` shadow member to decouple Row 21 (`Target | Est | Real RPM`) from Row 14, ensuring Row 21 redraws when optical speed updates.
+- **Enhanced Telemetry Reconstructor ANSI Tokenizer (`tools/reconstruct_telemetry.py`)**:
+  - Sliced token text between consecutive cursor positioning escapes (`\x1b[<row>;<col>H`) rather than stopping at embedded color escapes (`\x1b[1;32m`), preserving status tags and rev counts.
+- **Live Hardware Validation (Runs 9 & 10)**:
+  - **Run 9 (8-second test at 350 RPM)**: Motor smoothly accelerated to 350 RPM, counting 43 revs with peak current 1011 mA. Confirmed exact 1:1 alignment at 350 RPM.
+  - **Run 10 (15-second test at 375 RPM)**: Motor turned 123 revs. Validated the user's observation: motor accelerates in synchronism at 375 RPM (6.25 Hz pulse, ~15-25 mA current), and when slip occurs, optical sensor detects rotor oscillating at the 7-pole stator electrical field frequency (~2500 RPM / 41.7 Hz) with reactive current surges up to 1.19 A.
 
 ---
 
 ## 2. Artifacts & Outputs
 - **Tools**:
-  - `tools/run_motor_test.py` (New executable test runner)
-  - `tools/reconstruct_telemetry.py` (Updated with optical tokens and CSV fields)
+  - `tools/run_motor_test.py` (Fixed target RPM regex for Line 21, added optical_rpm fallback)
+  - `tools/reconstruct_telemetry.py` (Fixed tokenization of ANSI-styled fields)
   - `tools/capture_console.py` (Updated keymap)
 - **Firmware**:
-  - `src/main.c` (B1 button glitch fix and interactive hotkeys)
-  - `src/motor_control.c` (S-curve slew rate taper, base duty V/F boost linkage, 4 ms debounce)
+  - `src/ihm07m1.c` (Set `RepetitionCounter = 1` on TIM1 for 20 kHz center-aligned UEV)
+  - `src/motor_control.c` (Set `OPTICAL_PULSES_PER_REV = 1`, S-curve taper, V/F linkage)
+  - `src/console.c` (Added `line21_optical_rpm` to `MainShadow_t`)
   - `src/motor_profiles.c` (12N14P 7 pole pairs correction, 12V duty scaling)
 - **Documentation**:
   - `doc/features/09_motor_stall_validation_and_test_automation.md`

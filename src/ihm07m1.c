@@ -63,7 +63,7 @@ void IHM07M1_Init(void) {
     htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
     htim1.Init.Period = IHM07M1_PWM_ARR;
     htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-    htim1.Init.RepetitionCounter = 0;
+    htim1.Init.RepetitionCounter = 1; /* Center-aligned mode: UEV fires once per PWM cycle (20 kHz) at underflow */
     htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
     HAL_TIM_PWM_Init(&htim1);
 

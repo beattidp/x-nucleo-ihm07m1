@@ -140,16 +140,17 @@ class TelemetryReconstructor:
             self.state["hall_state"] = clean_text
 
         elif tag == "optical_tach":
-            m = re.search(r"(-?\d+)\s+RPM\s+\(Revs:\s*(\d+)\)\s+(\[.+?\])", clean_text)
+            m = re.search(r"(-?\d+)\s+RPM\s+\(Revs:\s*(\d+)\)(?:\s+(\[.+?\]))?", clean_text)
             if m:
                 opt_rpm = int(m.group(1))
                 opt_revs = int(m.group(2))
-                opt_status = m.group(3).strip()
-                if prev.get("optical_status") and prev.get("optical_status") != opt_status:
+                opt_status = m.group(3).strip() if m.group(3) else ""
+                if opt_status and prev.get("optical_status") and prev.get("optical_status") != opt_status:
                     self._record_event("Optical Tach Status", opt_status)
                 self.state["optical_rpm"] = opt_rpm
                 self.state["optical_revs"] = opt_revs
-                self.state["optical_status"] = opt_status
+                if opt_status:
+                    self.state["optical_status"] = opt_status
 
         elif tag == "motor_state":
             st = clean_text.strip()
@@ -231,22 +232,13 @@ class TelemetryReconstructor:
 
     def parse_stream(self, stream_data):
         """Tokenizes stream data by ANSI Cursor Positioning escapes \033[<row>;<col>H."""
-        pos = 0
-        for match in ANSI_CUP_RE.finditer(stream_data):
-            m_start = match.start()
-            if m_start > pos:
-                # Text preceding this escape belonged to the previous cursor location
-                pass
+        matches = list(ANSI_CUP_RE.finditer(stream_data))
+        for i, match in enumerate(matches):
             row = int(match.group(1))
             col = int(match.group(2))
-            # Text follows until next escape sequence
             next_start = match.end()
-            # Peek until next \x1b
-            next_esc = stream_data.find("\x1b", next_start)
-            if next_esc == -1:
-                token_text = stream_data[next_start:]
-            else:
-                token_text = stream_data[next_start:next_esc]
+            next_end = matches[i + 1].start() if i + 1 < len(matches) else len(stream_data)
+            token_text = stream_data[next_start:next_end]
 
             self.process_field(row, col, token_text)
 

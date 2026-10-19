@@ -272,6 +272,7 @@ typedef struct {
     uint8_t prof_idx;
     int target_speed_rpm;
     int actual_speed_rpm;
+    int line21_optical_rpm;
     int8_t direction;
     float torque_limit_amps;
     float active_duty_pct;
@@ -457,12 +458,13 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     int tgt_int = (int)ctrl->target_speed_rpm;
     if (!s_main_shadow.valid || spd_int != s_main_shadow.actual_speed_rpm || 
         tgt_int != s_main_shadow.target_speed_rpm || ctrl->direction != s_main_shadow.direction ||
-        opt_rpm_int != s_main_shadow.optical_rpm) {
+        opt_rpm_int != s_main_shadow.line21_optical_rpm) {
         printf("\033[21;31HTarget %4d | Est %4d | Real %4d RPM (%s)",
                tgt_int, spd_int, opt_rpm_int, (ctrl->direction > 0) ? "CW " : "CCW");
         s_main_shadow.actual_speed_rpm = spd_int;
         s_main_shadow.target_speed_rpm = tgt_int;
         s_main_shadow.direction = ctrl->direction;
+        s_main_shadow.line21_optical_rpm = opt_rpm_int;
     }
 
     /* 12. Commanded Torque Limit: Row 22, Col 31 */

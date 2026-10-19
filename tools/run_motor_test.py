@@ -67,7 +67,7 @@ def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
         except OSError:
             pass
 
-        m = re.search(r"Target\s+(\d+)", snap)
+        m = re.search(r"Target\s+(\d+)\s+\|\s+Est", snap)
         if m:
             curr_rpm = int(m.group(1))
             delta = target_rpm - curr_rpm
@@ -112,7 +112,7 @@ def analyze_test_run(samples, events):
     active_samples = [s for s in samples if s.get("motor_state") in ("STARTING (ALIGN & RAMP)", "RUNNING")]
     running_samples = [s for s in samples if s.get("motor_state") == "RUNNING"]
 
-    opt_rpms = [s["real_rpm"] for s in active_samples if s.get("real_rpm") is not None]
+    opt_rpms = [s["optical_rpm"] if s.get("optical_rpm") is not None else s.get("real_rpm", 0) for s in active_samples]
     opt_revs = [s["optical_revs"] for s in samples if s.get("optical_revs") is not None]
     peak_currs = [s["ipk_ma"] for s in active_samples if s.get("ipk_ma") is not None]
 
@@ -126,7 +126,7 @@ def analyze_test_run(samples, events):
     slip_events = [e for e in events if "SLIPPING" in e.get("details", "") or "VIBRATING" in e.get("details", "")]
 
     # Check steady-state speed in RUNNING state
-    running_rpms = [s["real_rpm"] for s in running_samples if s.get("real_rpm") is not None]
+    running_rpms = [s["optical_rpm"] if s.get("optical_rpm") is not None else s.get("real_rpm", 0) for s in running_samples]
     avg_running_rpm = (sum(running_rpms) / len(running_rpms)) if running_rpms else 0
     final_running_rpm = running_rpms[-1] if running_rpms else 0
 

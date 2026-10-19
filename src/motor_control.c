@@ -348,7 +348,7 @@ void Motor_Update1ms(void) {
 
     /* 2.5 Optical Tachometer RPM Calculation & Timeout Watchdog */
 #ifndef OPTICAL_PULSES_PER_REV
-#define OPTICAL_PULSES_PER_REV 2
+#define OPTICAL_PULSES_PER_REV 1  /* 1 falling-edge pulse per mechanical revolution */
 #endif
 
     uint32_t now = HAL_GetTick();
