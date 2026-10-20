@@ -66,15 +66,28 @@ extern ADC_HandleTypeDef hadc1;
 #define IHM07M1_HALL3_PORT          GPIOB
 #define IHM07M1_HALL3_AF            GPIO_AF1_TIM2
 
-/* Optical Tachometer Input Pin Selection:
- * 0 = PB10 on J3 Pin 3 (J3-Z+ / TIM2_CH3) - Default for current sensorless setup
- * 1 = PB11 on Morpho CN10 Pin 18 (TIM2_CH4) - Dedicated pin allowing J3 to host H1, H2, H3 Hall sensors
+/* Optical Tachometer Input Configuration:
+ * 0 = PB10 on J3 Pin 3 (J3-Z+ / TIM2_CH3, 32-bit) - Legacy baseline
+ * 1 = PB11 on Morpho CN10 Pin 18 (TIM2_CH4, 32-bit) - Dedicated pin on TIM2
+ * 2 = PC6 on Morpho CN10 Pin 4 (TIM3_CH1 Master + TIM4 Slave cascaded 32-bit)
+ *     Liberates TIM2 completely for 3-phase Hall effect sensors (H1, H2, H3 on J3).
  */
-#ifndef OPTICAL_TACH_USE_CN10_PB11
-#define OPTICAL_TACH_USE_CN10_PB11   0
+#ifndef OPTICAL_TACH_MODE
+#define OPTICAL_TACH_MODE            2
 #endif
 
-#if (OPTICAL_TACH_USE_CN10_PB11 == 1)
+#if (OPTICAL_TACH_MODE == 2)
+#define OPTICAL_TACH_PIN            GPIO_PIN_6
+#define OPTICAL_TACH_PORT           GPIOC
+#define OPTICAL_TACH_AF             GPIO_AF2_TIM3
+#define OPTICAL_TACH_TIM_MASTER     htim3
+#define OPTICAL_TACH_TIM_SLAVE      htim4
+#define OPTICAL_TACH_TIM_CHANNEL    TIM_CHANNEL_1
+#define OPTICAL_TACH_TIM_FLAG_CC    TIM_FLAG_CC1
+#define OPTICAL_TACH_TIM_IT_CC      TIM_IT_CC1
+#define OPTICAL_TACH_TIM_CCR        CCR1
+#define OPTICAL_TACH_PIN_LABEL      "CN10-4 (TIM3+4)"
+#elif (OPTICAL_TACH_MODE == 1)
 #define OPTICAL_TACH_PIN            GPIO_PIN_11
 #define OPTICAL_TACH_PORT           GPIOB
 #define OPTICAL_TACH_AF             GPIO_AF1_TIM2
@@ -155,6 +168,13 @@ void  IHM07M1_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, ui
 void  IHM07M1_GetInjectedCurrents(float* ia, float* ib, float* ic);
 void  IHM07M1_StartInjectedSampling(void);
 void  IHM07M1_OpticalResetEdgeState(void);
+uint32_t IHM07M1_Tach_GetTime32(void);
+
+extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
+extern TIM_HandleTypeDef htim4;
+extern TIM_HandleTypeDef htim16;
 
 #ifdef __cplusplus
 }

@@ -74,6 +74,7 @@ void  PowerStage_ReadRawCurrentSensors(uint16_t* raw_a, uint16_t* raw_b, uint16_
 void  PowerStage_CalibrateCurrentOffsets(uint16_t* offset_a, uint16_t* offset_b, uint16_t* offset_c);
 void  PowerStage_GetInjectedCurrents(float* ia, float* ib, float* ic);
 void  PowerStage_OpticalResetEdgeState(void);
+uint32_t PowerStage_Tach_GetTime32(void);
 
 #ifdef __cplusplus
 }

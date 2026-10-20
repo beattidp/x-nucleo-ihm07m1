@@ -203,7 +203,9 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Speed Potentiometer (R42)  : \r\n");
     printf(" Driver Status (%-5s DIAG) : \r\n", (caps && caps->board_type == BOARD_TYPE_IHM08M1_L6398) ? "L6398" : "L6230");
     printf(" Hall Sensor Signals (H321) : \r\n");
-#if (OPTICAL_TACH_USE_CN10_PB11 == 1)
+#if (OPTICAL_TACH_MODE == 2)
+    printf(" Optical Tachometer [CN10-4] : \r\n");
+#elif (OPTICAL_TACH_MODE == 1)
     printf(" Optical Tachometer [CN10-18]: \r\n");
 #else
     printf(" Optical Tachometer (J3-Z+) : \r\n");
