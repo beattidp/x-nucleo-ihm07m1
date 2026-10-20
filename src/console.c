@@ -271,6 +271,7 @@ typedef struct {
     bool pot_ctrl;
     bool fault_active;
     uint8_t hall_state;
+    int hall_rpm;
     int optical_rpm;
     uint32_t optical_pulse_count;
     bool motor_stalled;
@@ -397,15 +398,21 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     }
 
     /* 7. Hall Sensor Signals: Row 13, Col 31 */
-    if (!s_main_shadow.valid || telem->hall_state != s_main_shadow.hall_state) {
+    int hall_rpm_int = (int)telem->hall_rpm;
+    if (!s_main_shadow.valid || telem->hall_state != s_main_shadow.hall_state ||
+        hall_rpm_int != s_main_shadow.hall_rpm) {
         if (telem->hall_state == 7 || telem->hall_state == 0) {
             printf("\033[13;31H[SENSORLESS MOTOR / J4 DISCONNECTED] ");
         } else {
-            printf("\033[13;31HState %d [H1=%d, H2=%d, H3=%d]           ",
-                   telem->hall_state, (telem->hall_state & 1), 
-                   ((telem->hall_state >> 1) & 1), ((telem->hall_state >> 2) & 1));
+            printf("\033[13;31HState %d (H321=%d%d%d) | %4d RPM [VALID] ",
+                   telem->hall_state,
+                   ((telem->hall_state >> 2) & 1),
+                   ((telem->hall_state >> 1) & 1),
+                   (telem->hall_state & 1),
+                   hall_rpm_int);
         }
         s_main_shadow.hall_state = telem->hall_state;
+        s_main_shadow.hall_rpm = hall_rpm_int;
     }
 
     /* 7.5. Optical Tachometer: Row 14, Col 31 */

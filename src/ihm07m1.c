@@ -142,23 +142,28 @@ void IHM07M1_Init(void) {
     IHM07M1_SetCurrentReference(2.2f);
 
     /* 7. Configure Hall & Optical Tachometer Inputs */
-    /* PA15 (Hall 1) */
+#if (OPTICAL_TACH_MODE == 2)
+    /* Hardware 3-Phase Hall Sensor Inputs (PA15, PB3, PB10 on Connector J3)
+     * Configured for TIM2 Channels 1, 2, 3 in Hall Sensor Interface Mode */
     GPIO_InitStruct.Pin = IHM07M1_HALL1_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = IHM07M1_HALL1_AF;
     HAL_GPIO_Init(IHM07M1_HALL1_PORT, &GPIO_InitStruct);
 
-    /* PB3 (Hall 2) */
     GPIO_InitStruct.Pin = IHM07M1_HALL2_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = IHM07M1_HALL2_AF;
     HAL_GPIO_Init(IHM07M1_HALL2_PORT, &GPIO_InitStruct);
 
-#if (OPTICAL_TACH_MODE == 2)
-    /* PB10 (Hall 3 on J3 Pin 3): Dedicated Hall sensor input */
     GPIO_InitStruct.Pin = IHM07M1_HALL3_PIN;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = IHM07M1_HALL3_AF;
     HAL_GPIO_Init(IHM07M1_HALL3_PORT, &GPIO_InitStruct);
 
     /* PC6 (Optical Tachometer on Morpho CN10 Pin 4): TIM3_CH1 Input Capture */
@@ -217,17 +222,43 @@ void IHM07M1_Init(void) {
     HAL_NVIC_EnableIRQ(TIM3_IRQn);
     HAL_TIM_IC_Start_IT(&htim3, OPTICAL_TACH_TIM_CHANNEL);
 
-    /* Initialize TIM2 as independent free-running 32-bit timebase */
+    /* 3. Configure TIM2 in Hardware 3-Phase Hall Sensor Interface Mode:
+     * - Channels 1, 2, 3 (PA15, PB3, PB10 on connector J3) connected to internal 3-input XOR gate (CR2 TI1S)
+     * - Filtered XOR edge detector (TI1F_ED) triggers slave mode reset (SMS = TIM_SLAVEMODE_RESET)
+     * - Counter CNT captured into CCR1 on every 60 deg electrical transition and reset to 0
+     * - Prescaler = 169 -> 1.000 MHz (1.0 us tick, 32-bit full scale up to 71.58 min)
+     * - Generates CC1 interrupt on each Hall edge */
     htim2.Instance = TIM2;
     htim2.Init.Prescaler = 169;
     htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
     htim2.Init.Period = 0xFFFFFFFFU;
     htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
     htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-    HAL_TIM_Base_Init(&htim2);
-    HAL_TIM_Base_Start(&htim2);
+
+    TIM_HallSensor_InitTypeDef sHallConfig = {0};
+    sHallConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
+    sHallConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+    sHallConfig.IC1Filter = 0x0F; /* 1.5 us hardware debounce filter */
+    sHallConfig.Commutation_Delay = 0;
+    HAL_TIMEx_HallSensor_Init(&htim2, &sHallConfig);
+
+    HAL_NVIC_SetPriority(TIM2_IRQn, 2, 0);
+    HAL_NVIC_EnableIRQ(TIM2_IRQn);
+    HAL_TIMEx_HallSensor_Start_IT(&htim2);
 
 #elif (OPTICAL_TACH_MODE == 1)
+    /* PA15 (Hall 1) */
+    GPIO_InitStruct.Pin = IHM07M1_HALL1_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL1_PORT, &GPIO_InitStruct);
+
+    /* PB3 (Hall 2) */
+    GPIO_InitStruct.Pin = IHM07M1_HALL2_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL2_PORT, &GPIO_InitStruct);
+
     /* PB10 (Hall 3 on J3 Pin 3): Dedicated Hall sensor input */
     GPIO_InitStruct.Pin = IHM07M1_HALL3_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
@@ -250,18 +281,30 @@ void IHM07M1_Init(void) {
     htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
     HAL_TIM_IC_Init(&htim2);
 
-    TIM_IC_InitTypeDef sICConfig = {0};
-    sICConfig.ICPolarity = TIM_ICPOLARITY_FALLING;
-    sICConfig.ICSelection = TIM_ICSELECTION_DIRECTTI;
-    sICConfig.ICPrescaler = TIM_ICPSC_DIV1;
-    sICConfig.ICFilter = 0x0F;
-    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig, OPTICAL_TACH_TIM_CHANNEL);
+    TIM_IC_InitTypeDef sICConfig1 = {0};
+    sICConfig1.ICPolarity = TIM_ICPOLARITY_FALLING;
+    sICConfig1.ICSelection = TIM_ICSELECTION_DIRECTTI;
+    sICConfig1.ICPrescaler = TIM_ICPSC_DIV1;
+    sICConfig1.ICFilter = 0x0F;
+    HAL_TIM_IC_ConfigChannel(&htim2, &sICConfig1, OPTICAL_TACH_TIM_CHANNEL);
 
     HAL_NVIC_SetPriority(TIM2_IRQn, 3, 0);
     HAL_NVIC_EnableIRQ(TIM2_IRQn);
     HAL_TIM_IC_Start_IT(&htim2, OPTICAL_TACH_TIM_CHANNEL);
 
 #else
+    /* PA15 (Hall 1) */
+    GPIO_InitStruct.Pin = IHM07M1_HALL1_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL1_PORT, &GPIO_InitStruct);
+
+    /* PB3 (Hall 2) */
+    GPIO_InitStruct.Pin = IHM07M1_HALL2_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(IHM07M1_HALL2_PORT, &GPIO_InitStruct);
+
     /* PB10 (Optical Tachometer / Hall 3 on J3-Z+): TIM2_CH3 Input Capture */
     GPIO_InitStruct.Pin = OPTICAL_TACH_PIN;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -540,6 +583,25 @@ void TIM3_IRQHandler(void) {
         NVIC_ClearPendingIRQ(TIM3_IRQn);
     }
     (void)htim3.Instance->SR;
+}
+
+/**
+ * @brief TIM2 Interrupt Handler (Hardware 3-Phase Hall Sensor Interface Mode)
+ *        Triggered by TIM2 CC1 on every 60 deg electrical transition (TI1F_ED XOR).
+ *        Captured period between transitions is in TIM2 CCR1 (1 us resolution).
+ */
+void TIM2_IRQHandler(void) {
+    if (__HAL_TIM_GET_IT_SOURCE(&htim2, TIM_IT_CC1) != RESET &&
+        __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_CC1) != RESET) {
+        __HAL_TIM_CLEAR_IT(&htim2, TIM_IT_CC1);
+        __HAL_TIM_CLEAR_FLAG(&htim2, TIM_FLAG_CC1);
+
+        uint32_t dt_us = (uint32_t)htim2.Instance->CCR1;
+        uint8_t hall_state = IHM07M1_ReadHallSensors();
+
+        Motor_HallTransitionISR(hall_state, dt_us);
+    }
+    (void)htim2.Instance->SR;
 }
 #else
 /**

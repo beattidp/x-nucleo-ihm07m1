@@ -36,6 +36,9 @@ typedef struct MotorTelemetry_s {
     float id_amps;                  /* Direct (flux-producing) current in Amps */
     float iq_amps;                  /* Quadrature (torque-producing) current in Amps */
     uint8_t hall_state;             /* Current Hall state (1 to 6) */
+    float hall_rpm;                 /* Measured speed from Hall transition interval (RPM) */
+    uint32_t hall_transition_count; /* Cumulative Hall transition edge count */
+    bool hall_valid;                /* True if Hall state is valid (1 to 6) */
     bool fault_active;              /* L6230 DIAG line active (low) */
     float optical_rpm;              /* Measured mechanical speed from photodetector tachometer (RPM) */
     uint32_t optical_pulse_count;   /* Cumulative optical revolution pulse count */
@@ -102,6 +105,7 @@ void Motor_Update1ms(void);
 void Motor_PWM_UpdateISR(void);
 void Motor_OpticalFallingEdgeISR(uint32_t capture_val);
 void Motor_OpticalResetEdgeState(void);
+void Motor_HallTransitionISR(uint8_t hall_state, uint32_t dt_us);
 void Motor_GetTelemetry(MotorTelemetry_t* telem);
 const MotorControl_t* Motor_GetControl(void);
 

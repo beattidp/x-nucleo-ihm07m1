@@ -94,6 +94,39 @@ void Motor_OpticalFallingEdgeISR(uint32_t capture_val) {
     }
 }
 
+/* Hall Sensor Interface State (TIM2 3-Phase Hall Mode) */
+static volatile uint32_t s_hall_transition_count = 0;
+static volatile uint32_t s_last_hall_tick_ms = 0;
+static volatile float s_hall_rpm = 0.0f;
+
+/**
+ * @brief TIM2 Hardware Hall Sensor Transition ISR Callback
+ *        Fired by TIM2 CC1 on every 60 deg electrical transition (XOR TI1F_ED).
+ *        dt_us is the interval between transitions captured in TIM2 CCR1 (1 us resolution).
+ */
+void Motor_HallTransitionISR(uint8_t hall_state, uint32_t dt_us) {
+    g_telemetry.hall_state = hall_state;
+    if (hall_state >= 1 && hall_state <= 6) {
+        g_telemetry.hall_valid = true;
+        s_hall_transition_count++;
+        g_telemetry.hall_transition_count = s_hall_transition_count;
+        s_last_hall_tick_ms = HAL_GetTick();
+
+        if (dt_us >= 50 && dt_us <= 1000000) {
+            uint32_t p = g_motor_ctrl.pole_pairs ? g_motor_ctrl.pole_pairs : 7;
+            /* 6 transitions per electrical cycle * pole pairs per mechanical rev:
+             * RPM = 60 * 1,000,000 / (6 * p * dt_us) = 10,000,000 / (p * dt_us) */
+            float rpm = 10000000.0f / ((float)p * (float)dt_us);
+            if (rpm <= 30000.0f) {
+                s_hall_rpm = (s_hall_rpm * 0.7f) + (rpm * 0.3f);
+                g_telemetry.hall_rpm = s_hall_rpm;
+            }
+        }
+    } else {
+        g_telemetry.hall_valid = false;
+    }
+}
+
 /**
  * @brief Reset optical edge alternation state and re-arm timer capture
  */
@@ -120,6 +153,12 @@ void Motor_Init(void) {
     g_telemetry.optical_pulse_count = 0;
     g_telemetry.motor_stalled = false;
     g_telemetry.motor_slipping = false;
+    g_telemetry.hall_rpm = 0.0f;
+    g_telemetry.hall_transition_count = 0;
+    g_telemetry.hall_valid = false;
+    s_hall_transition_count = 0;
+    s_last_hall_tick_ms = 0;
+    s_hall_rpm = 0.0f;
     s_last_optical_capture = 0;
     s_has_previous_optical_capture = false;
     s_optical_pulse_count = 0;
@@ -393,15 +432,28 @@ void Motor_Update1ms(void) {
         g_telemetry.current_peak_amps = 0.0f;
     }
 
+    uint32_t now = HAL_GetTick();
+
     /* Hall Sensors */
     g_telemetry.hall_state = PowerStage_ReadHallSensors();
+    if (g_telemetry.hall_state >= 1 && g_telemetry.hall_state <= 6) {
+        g_telemetry.hall_valid = true;
+    } else {
+        g_telemetry.hall_valid = false;
+        g_telemetry.hall_rpm = 0.0f;
+    }
+
+    /* Hall Sensor speed decay watchdog (0 RPM after 250 ms without transition) */
+    if (now - s_last_hall_tick_ms > 250) {
+        s_hall_rpm = 0.0f;
+        g_telemetry.hall_rpm = 0.0f;
+    }
 
     /* 2.5 Optical Tachometer RPM Calculation & Timeout Watchdog */
 #ifndef OPTICAL_PULSES_PER_REV
 #define OPTICAL_PULSES_PER_REV 1  /* 1 falling-edge pulse per mechanical revolution */
 #endif
 
-    uint32_t now = HAL_GetTick();
     if (s_new_optical_pulse) {
         s_new_optical_pulse = false;
         uint32_t dt = s_optical_delta_ticks;
