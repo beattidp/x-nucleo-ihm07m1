@@ -1,0 +1,29 @@
+[?25l[2J[H==============================================================================
+   STM32G474RE + X-NUCLEO-IHM07M1 -- BLDC MOTOR EVALUATION DASHBOARD
+==============================================================================
+ Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 20 kHz
+ Uptime :                                | 
+------------------------------------------------------------------------------
+ POWER STAGE TELEMETRY (X-NUCLEO-IHM07M1 - L6230 DMOS 3-Phase Bridge)
+------------------------------------------------------------------------------
+ Bus Voltage (VBUS)         : 
+ Driver Board Temperature   : 
+ Speed Potentiometer (R42)  : 
+ Driver Status (L6230 DIAG) : 
+ Hall Sensor Signals (H321) : 
+ Optical Tachometer (J3-Z+) : 
+------------------------------------------------------------------------------
+ MOTOR DRIVE STATUS
+------------------------------------------------------------------------------
+ Drive State                : 
+ Control Strategy           : 
+ Active Motor Profile       : 
+ Target / Estimated Speed   : 
+ Commanded Torque Limit     : 
+ Active Modulated Duty      : 
+ Phase & FOC Currents (mA)  : 
+ HW Trip Limit & Peak Curr  : 
+  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  
+  [F] FOC Loop     | [S<rpm>] Speed| [B] Brake     | [Z] Zero Rev | [R] Reset
+==============================================================================
+[5;44HSample: #0125733  [Heartbeat: -][5;11H00:02:05[9;31H24.26 V [OK]              [10;31H45.3 deg C[11;31H 59.6 % [MANUAL (Press 'P' to enable)][12;31H[1;32m[READY / NORMAL][0m             [13;31H[SENSORLESS MOTOR / J4 DISCONNECTED] [14;31H   0 RPM (Revs:     0) [STOPPED]            [18;31HSTOPPED                            [19;31H[1;32mSTAGE 3: FOC DUAL PI REGULATOR (ON)[0m [20;31H[2/4] 5010-360KV Bare Rotor (7 PP, Max 1.20 A)      [21;31HTarget 1000 | Est    0 | Real    0 RPM (CW )[22;31H1.20 A (Software Regulated Ceiling)[23;31H 0.0 % (Base 12.0 % | ARR = 4249)  [24;31HIA=   0 IB=   0 IC=   0 | Id=   0 Iq=   0 mA  [25;31H2.20 A (L6230 OCD) | Peak:    0 mA  [30;1H[5;44HSample: #0125984  [Heartbeat: \][30;1H[5;44HSample: #0126236  [Heartbeat: \][5;11H00:02:06[11;31H 59.6 % [MANUAL (Press 'P' to enable)][12;31H[1;31m[FAULT / OVERCURRENT TRIPPED][0m[18;31HFAULT                              [23;31H 9.0 % (Base 12.0 % | ARR = 4249)  [30;1H[5;44HSample: #0126488  [Heartbeat: |][30;1H[5;44HSample: #0126740  [Heartbeat: |][30;1H[5;44HSample: #0126992  [Heartbeat: /][30;1H[5;44HSample: #0127244  [Heartbeat: /][5;11H00:02:07[30;1H[5;44HSample: #0127496  [Heartbeat: -][30;1H[5;44HSample: #0127748  [Heartbeat: -][30;1H[5;44HSample: #0128000  [Heartbeat: \][5;11H00:02:08[30;1H[5;44HSample: #0128252  [Heartbeat: \][30;1H[5;44HSample: #0128504  [Heartbeat: |][30;1H[5;44HSample: #0128756  [Heartbeat: |][30;1H[5;44HSample: #0129008  [Heartbeat: /][5;11H00:02:09[30;1H[5;44HSample: #0129260  [Heartbeat: /][30;1H[5;44HSample: #0129512  [Heartbeat: -][30;1H[5;44HSample: #0129764  [Heartbeat: -][30;1H[5;44HSample: #0130016  [Heartbeat: \][5;11H00:02:10[30;1H[5;44HSample: #0130268  [Heartbeat: \][30;1H[5;44HSample: #0130520  [Heartbeat: |][30;1H[5;44HSample: #0130772  [Heartbeat: |][30;1H[5;44HSample: #0131024  [Heartbeat: /][5;11H00:02:11[30;1H[5;44HSample: #0131276  [Heartbeat: /][30;1H[5;44HSample: #0131528  [Heartbeat: -][30;1H[5;44HSample: #0131780  [Heartbeat: -][30;1H[5;44HSample: #0132032  [Heartbeat: \][5;11H00:02:12[30;1H[5;44HSample: #0132284  [Heartbeat: \][30;1H[5;44HSample: #0132536  [Heartbeat: |][30;1H[5;44HSample: #0132788  [Heartbeat: |][30;1H[5;44HSample: #0133040  [Heartbeat: /][5;11H00:02:13[30;1H[5;44HSample: #0133292  [Heartbeat: /][30;1H[5;44HSample: #0133544  [Heartbeat: -][30;1H[5;44HSample: #0133796  [Heartbeat: -][30;1H[5;44HSample: #0134048  [Heartbeat: \][5;11H00:02:14[30;1H

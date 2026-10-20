@@ -20,7 +20,8 @@ typedef struct {
     float max_rpm;                         /* Maximum RPM (default: 3000 RPM) */
     float base_duty_pct;                   /* Baseline V/F duty at min_rpm (e.g. 28.0%) */
     float vf_slope_pct;                    /* Back-EMF compensation slope across speed range (e.g. 32.0%) */
-    float accel_slew_rpm_s;                /* Acceleration slew rate limit in RPM/second (e.g. 150.0) */
+    float accel_slew_rpm_s;                /* Acceleration slew rate limit in RPM/second (e.g. 500.0) */
+    float decel_slew_rpm_s;                /* Deceleration slew rate limit in RPM/second (e.g. 400.0) */
 
     /* Measured / Characterized parameters */
     float phase_resistance_ohm;            /* Phase-to-neutral resistance Rs in Ohms */

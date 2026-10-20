@@ -37,6 +37,11 @@ def ensure_stopped(session_id):
     except OSError:
         pass
 
+    if "FAULT" in content:
+        print("Motor is in FAULT state. Sending RESET ('r')...")
+        send_keystroke(session_id, "r")
+        time.sleep(0.5)
+
     if "Drive State                : RUNNING" in content or "STARTING" in content:
         print("Motor is currently running or starting. Sending STOP...")
         send_keystroke(session_id, "space")

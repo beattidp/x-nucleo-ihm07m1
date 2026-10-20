@@ -144,6 +144,7 @@ void Motor_Init(void) {
 
     /* Initialize CORDIC hardware accelerator and FOC pipeline */
     FOC_Init();
+    g_motor_ctrl.foc_closed_loop = true;
 
     /* Measure zero-current ADC quiescent offsets */
     Motor_CalibrateCurrentOffsets();
@@ -158,12 +159,16 @@ void Motor_ApplyProfile(const MotorProfile_t* prof) {
     g_motor_ctrl.duty_pct = prof->base_duty_pct;
     g_motor_ctrl.vf_slope_pct = prof->vf_slope_pct;
     g_motor_ctrl.accel_slew_rpm_s = prof->accel_slew_rpm_s;
+    g_motor_ctrl.decel_slew_rpm_s = (prof->decel_slew_rpm_s > 10.0f) ? prof->decel_slew_rpm_s : 400.0f;
     g_motor_ctrl.min_rpm = prof->min_rpm;
     g_motor_ctrl.max_rpm = prof->max_rpm;
     g_motor_ctrl.phase_resistance_ohm = prof->phase_resistance_ohm;
     g_motor_ctrl.kv_rating = prof->kv_rating;
     g_motor_ctrl.torque_limit_amps = prof->max_continuous_amps;
     g_motor_ctrl.current_limit_amps = prof->hw_break_trip_amps;
+
+    /* Re-tune FOC current regulators with updated motor parameters */
+    FOC_CurrentRegulators_Init(prof->phase_resistance_ohm, 0.00015f, prof->kv_rating, 2.0f * FOC_PI * 600.0f);
 
     /* If potentiometer control is enabled, re-evaluate target speed based on pot position and profile RPM range */
     if (g_motor_ctrl.pot_control_enabled) {
@@ -207,6 +212,15 @@ void Motor_DecTorqueLimit(void) {
     Motor_SetTorqueLimit(g_motor_ctrl.torque_limit_amps - 0.1f);
 }
 
+void Motor_ToggleClosedLoopFOC(void) {
+    g_motor_ctrl.foc_closed_loop = !g_motor_ctrl.foc_closed_loop;
+    FOC_SetRegulatorsActive(g_motor_ctrl.foc_closed_loop);
+}
+
+bool Motor_IsClosedLoopFOC(void) {
+    return g_motor_ctrl.foc_closed_loop;
+}
+
 void Motor_TogglePotControl(void) {
     g_motor_ctrl.pot_control_enabled = !g_motor_ctrl.pot_control_enabled;
 }
@@ -220,6 +234,7 @@ void Motor_Start(void) {
         Motor_ResetFault();
     }
     if (g_motor_ctrl.state == MOTOR_STATE_STOPPED) {
+        FOC_CurrentRegulators_Reset();
         g_motor_ctrl.state = MOTOR_STATE_STARTING;
         g_motor_ctrl.startup_timer_ms = 0;
         g_motor_ctrl.current_freq_hz = 0.0f;
@@ -456,7 +471,8 @@ void Motor_Update1ms(void) {
         } else if (g_motor_ctrl.state == MOTOR_STATE_RUNNING) {
             /* Slew target speed toward pot demanded speed */
             float speed_diff = pot_demanded_rpm - g_motor_ctrl.target_speed_rpm;
-            float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.15f;
+            float slew_rate = (speed_diff > 0.0f) ? g_motor_ctrl.accel_slew_rpm_s : g_motor_ctrl.decel_slew_rpm_s;
+            float max_slew_per_ms = (slew_rate > 10.0f) ? (slew_rate / 1000.0f) : 0.15f;
             if (fabsf(speed_diff) <= max_slew_per_ms) {
                 g_motor_ctrl.target_speed_rpm = pot_demanded_rpm;
             } else if (speed_diff > 0.0f) {
@@ -478,9 +494,9 @@ void Motor_Update1ms(void) {
     }
 
     if (g_motor_ctrl.state == MOTOR_STATE_BRAKING) {
-        /* Active controlled deceleration at double slew rate */
-        float decel_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
-                             (g_motor_ctrl.accel_slew_rpm_s * 2.0f / 1000.0f) : 0.120f;
+        /* Active controlled deceleration at profile decel slew rate */
+        float decel_per_ms = (g_motor_ctrl.decel_slew_rpm_s > 10.0f) ? 
+                             (g_motor_ctrl.decel_slew_rpm_s / 1000.0f) : 0.120f;
         if (g_motor_ctrl.actual_speed_rpm > decel_per_ms) {
             g_motor_ctrl.actual_speed_rpm -= decel_per_ms;
         } else {
@@ -516,17 +532,17 @@ void Motor_Update1ms(void) {
             }
             duty_demanded = (align_v / vbus_now) * 100.0f;
         } else {
-            /* 4.2 Inertia-Aware S-Curve Acceleration Ramp */
+            /* 4.2 Inertia-Aware Acceleration Ramp */
             float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
                                     (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
             float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
             if (speed_diff > 0.0f && speed_diff < 40.0f) {
                 float taper = speed_diff / 40.0f;
-                if (taper < 0.15f) taper = 0.15f;
+                if (taper < 0.20f) taper = 0.20f;
                 max_slew_per_ms *= taper;
             }
 
-            /* Initialize from 1.0 Hz electrical (~4.3 RPM for 14 PP) */
+            /* Initialize from 1.0 Hz electrical (~8.5 RPM for 7 PP) */
             float min_start_rpm = (1.0f * 60.0f) / (float)g_motor_ctrl.pole_pairs;
             if (g_motor_ctrl.actual_speed_rpm < min_start_rpm) {
                 g_motor_ctrl.actual_speed_rpm = min_start_rpm;
@@ -537,6 +553,7 @@ void Motor_Update1ms(void) {
             if (g_motor_ctrl.actual_speed_rpm >= g_motor_ctrl.target_speed_rpm) {
                 g_motor_ctrl.actual_speed_rpm = g_motor_ctrl.target_speed_rpm;
                 g_motor_ctrl.state = MOTOR_STATE_RUNNING;
+                FOC_CurrentRegulators_Reset();
             }
 
             active_freq = (g_motor_ctrl.actual_speed_rpm * (float)g_motor_ctrl.pole_pairs) / 60.0f;
@@ -545,7 +562,7 @@ void Motor_Update1ms(void) {
             /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
             float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
             float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
-            if (v_boost < 0.80f) v_boost = 0.80f;
+            if (v_boost < 1.00f) v_boost = 1.00f;
 
             float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
             float v_target = v_boost + v_bemf;
@@ -553,14 +570,14 @@ void Motor_Update1ms(void) {
         }
     } else if (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_BRAKING) {
         if (g_motor_ctrl.state == MOTOR_STATE_RUNNING) {
-            /* Slew actual speed toward target speed with smooth taper */
+            /* Slew actual speed toward target speed with distinct accel and decel rates */
             float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
-            float max_slew_per_ms = (g_motor_ctrl.accel_slew_rpm_s > 10.0f) ? 
-                                    (g_motor_ctrl.accel_slew_rpm_s / 1000.0f) : 0.060f;
+            float slew_rate = (speed_diff > 0.0f) ? g_motor_ctrl.accel_slew_rpm_s : g_motor_ctrl.decel_slew_rpm_s;
+            float max_slew_per_ms = (slew_rate > 10.0f) ? (slew_rate / 1000.0f) : 0.10f;
             float abs_diff = fabsf(speed_diff);
             if (abs_diff < 40.0f && abs_diff > 0.0f) {
                 float taper = abs_diff / 40.0f;
-                if (taper < 0.15f) taper = 0.15f;
+                if (taper < 0.20f) taper = 0.20f;
                 max_slew_per_ms *= taper;
             }
 
@@ -579,14 +596,44 @@ void Motor_Update1ms(void) {
         /* Exact Back-EMF Feedforward V/F Voltage Law: V_target = V_boost + (RPM / Kv) */
         float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
         float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
-        if (v_boost < 0.80f) v_boost = 0.80f;
+        if (v_boost < 1.00f) v_boost = 1.00f;
 
         float v_bemf = g_motor_ctrl.actual_speed_rpm / kv;
         float v_target = v_boost + v_bemf;
         duty_demanded = (v_target / vbus_now) * 100.0f;
     }
 
-    /* 4.3 Filtered Current Monitoring & Soft Current Foldback */
+    /* 4.3 Outer Speed-to-Torque Governor for Closed-Loop FOC Mode */
+    if (g_motor_ctrl.foc_closed_loop) {
+        /* Baseline running drag current feedforward:
+         * For bare rotor (no flywheel), steady-state motoring drag is only ~12-25 mA. */
+        float iq_demanded = 0.015f + (g_motor_ctrl.actual_speed_rpm / 6000.0f) * 0.020f;
+
+        /* If optical tachometer is locked and tracking, add proportional speed trim */
+        if (!g_telemetry.motor_slipping && g_telemetry.optical_rpm > 100.0f) {
+            float optical_err = g_motor_ctrl.actual_speed_rpm - g_telemetry.optical_rpm;
+            iq_demanded += optical_err * 0.0005f;
+        } else {
+            /* While accelerating along profile ramp, add proportional acceleration torque */
+            float ramp_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.actual_speed_rpm;
+            if (ramp_diff > 0.0f) {
+                iq_demanded += (ramp_diff * 0.0003f);
+            }
+        }
+
+        /* Clamp Iq demand:
+         * - Maximum: continuous torque limit (1.20 A)
+         * - Minimum: +0.005 A motoring bias to guarantee zero reverse regeneration
+         *   into the unidirectional bench power supply during deceleration */
+        float iq_max = g_motor_ctrl.torque_limit_amps;
+        float iq_min = 0.005f;
+        if (iq_demanded > iq_max) iq_demanded = iq_max;
+        if (iq_demanded < iq_min) iq_demanded = iq_min;
+
+        FOC_SetTorqueReference(iq_demanded);
+    }
+
+    /* 4.4 Filtered Current Monitoring & Soft Current Foldback */
     static float s_filt_current = 0.0f;
     static uint16_t s_overcurrent_timer_ms = 0;
 
@@ -720,19 +767,64 @@ void Motor_PWM_UpdateISR(void) {
         g_motor_ctrl.state == MOTOR_STATE_STARTING ||
         g_motor_ctrl.state == MOTOR_STATE_CHARACTERIZING) {
 
-        /* 1. Read synchronized 3-shunt currents sampled at TIM1 PWM valley */
+        /* 1. Advance 32-bit phase accumulator for the upcoming PWM period */
+        int32_t damping_correction = 0;
+        if (g_motor_ctrl.foc_closed_loop && FOC_AreRegulatorsActive() && 
+            (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_STARTING) && 
+            g_motor_ctrl.actual_speed_rpm >= 400.0f) {
+            float d_rad_s = -g_foc.currents.id * g_foc.active_damping_gain;
+            /* Clamp damping frequency correction to +/- 10 Hz (+/- 62.8 rad/s) */
+            if (d_rad_s > 62.8f) d_rad_s = 62.8f;
+            else if (d_rad_s < -62.8f) d_rad_s = -62.8f;
+            damping_correction = (int32_t)(d_rad_s * 34178.0f);
+        }
+        s_phase_accum += (uint32_t)(s_phase_step + damping_correction);
+
+        /* 2. Read synchronized 3-shunt currents sampled at TIM1 PWM valley */
         float ia = 0.0f, ib = 0.0f, ic = 0.0f;
         PowerStage_GetInjectedCurrents(&ia, &ib, &ic);
 
-        /* 2. Map 32-bit phase accumulator to electrical angle theta in radians [-PI, PI) */
+        /* 3. Map updated phase accumulator to electrical angle theta in radians [-PI, PI) */
         float theta_rad = ((float)(int32_t)s_phase_accum) * (PI_FLOAT / 2147483648.0f);
 
-        /* 3. Execute Clarke and CORDIC hardware Park transformations */
+        /* 4. Execute Clarke and CORDIC hardware Park transformations */
         FOC_ProcessCurrents(ia, ib, ic, theta_rad);
 
-        if (g_motor_ctrl.mode == MOTOR_MODE_OPEN_LOOP_CHAR) {
-            s_phase_accum += (uint32_t)s_phase_step;
+        if (g_motor_ctrl.foc_closed_loop && FOC_AreRegulatorsActive() && 
+            (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_STARTING) && 
+            g_motor_ctrl.actual_speed_rpm >= 150.0f) {
 
+            /* Calculate electrical angular frequency in rad/s */
+            float omega_e = ((float)s_phase_step * (20000.0f / 2147483648.0f)) * FOC_TWO_PI;
+            g_foc.omega_e = omega_e;
+
+            /* Execute dual PI current regulators (Id -> 0, Iq -> Iq_ref) */
+            float vd = 0.0f, vq = 0.0f;
+            float vbus = (g_telemetry.vbus_v > 8.0f) ? g_telemetry.vbus_v : 24.0f;
+            float v_max = vbus * FOC_ONE_BY_SQRT3;
+            float v_baseline = (g_motor_ctrl.active_duty_pct / 100.0f) * v_max;
+
+            FOC_CurrentRegulators_Update(g_foc.currents.id, g_foc.currents.iq,
+                                         g_foc.id_ref, g_foc.iq_ref,
+                                         omega_e, vbus, v_baseline, &vd, &vq);
+
+            /* Inverse Park Transform: (Vd, Vq) -> (Valpha, Vbeta) via cached CORDIC sin/cos */
+            float v_alpha = 0.0f, v_beta = 0.0f;
+            FOC_InvPark(vd, vq, &v_alpha, &v_beta);
+
+            /* Symmetrical sinusoidal PWM matching open-loop carrier with active FOC damping */
+            int32_t scale = (int32_t)s_active_ccr_scale;
+            int32_t half = (int32_t)s_half_arr;
+
+            uint8_t u_idx = (uint8_t)(s_phase_accum >> 24);
+            uint8_t v_idx = (uint8_t)(u_idx + 85);
+            uint8_t w_idx = (uint8_t)(u_idx + 171);
+
+            htim1.Instance->CCR1 = (uint32_t)(half + (((int32_t)s_sin_table_s12[u_idx] * scale) >> 11));
+            htim1.Instance->CCR2 = (uint32_t)(half + (((int32_t)s_sin_table_s12[v_idx] * scale) >> 11));
+            htim1.Instance->CCR3 = (uint32_t)(half + (((int32_t)s_sin_table_s12[w_idx] * scale) >> 11));
+
+        } else if (g_motor_ctrl.mode == MOTOR_MODE_OPEN_LOOP_CHAR || g_motor_ctrl.state == MOTOR_STATE_STARTING) {
             uint8_t u_idx = (uint8_t)(s_phase_accum >> 24);
             uint8_t v_idx = (uint8_t)(u_idx + 85);   /* +120 deg */
             uint8_t w_idx = (uint8_t)(u_idx + 171);  /* +240 deg */

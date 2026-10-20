@@ -15,12 +15,13 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .base_duty_pct = 12.0f,
         .vf_slope_pct = 26.0f,
         .accel_slew_rpm_s = 150.0f,
+        .decel_slew_rpm_s = 200.0f,
         .phase_resistance_ohm = 0.85f,
         .kv_rating = 920.0f,
         .characterized = true
     },
     {
-        .name = "Flywheel 5010-360KV",
+        .name = "5010-360KV Bare Rotor",
         .pole_pairs = 7,  /* 12N14P: 14 rotor magnets = 7 pole pairs */
         .rated_voltage_v = 24.0f,
         .max_continuous_amps = 1.20f,
@@ -29,7 +30,8 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .max_rpm = 6500.0f,
         .base_duty_pct = 12.0f,
         .vf_slope_pct = 38.0f,
-        .accel_slew_rpm_s = 80.0f,
+        .accel_slew_rpm_s = 250.0f,  /* Tuned bare rotor acceleration */
+        .decel_slew_rpm_s = 250.0f,  /* Controlled deceleration to prevent bus pumping */
         .phase_resistance_ohm = 0.50f,
         .kv_rating = 360.0f,
         .characterized = true
@@ -45,12 +47,13 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .base_duty_pct = 14.0f,
         .vf_slope_pct = 40.0f,
         .accel_slew_rpm_s = 40.0f,
+        .decel_slew_rpm_s = 50.0f,
         .phase_resistance_ohm = 1.20f,
         .kv_rating = 170.0f,
         .characterized = false
     },
     {
-        .name = "Custom / Characterized",
+        .name = "5010-360KV Flywheel",
         .pole_pairs = 7,
         .rated_voltage_v = 24.0f,
         .max_continuous_amps = 1.20f,
@@ -59,7 +62,8 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .max_rpm = 4000.0f,
         .base_duty_pct = 12.0f,
         .vf_slope_pct = 38.0f,
-        .accel_slew_rpm_s = 50.0f,
+        .accel_slew_rpm_s = 80.0f,   /* Conservative high-inertia flywheel ramp */
+        .decel_slew_rpm_s = 80.0f,
         .phase_resistance_ohm = 0.50f,
         .kv_rating = 360.0f,
         .characterized = false
@@ -117,6 +121,7 @@ void MotorProfiles_SaveCharacterized(float rs_ohm, float kv, float base_duty, fl
     custom->min_rpm = s_profiles[s_active_profile_idx].min_rpm;
     custom->max_rpm = s_profiles[s_active_profile_idx].max_rpm;
     custom->accel_slew_rpm_s = s_profiles[s_active_profile_idx].accel_slew_rpm_s;
+    custom->decel_slew_rpm_s = s_profiles[s_active_profile_idx].decel_slew_rpm_s;
     custom->phase_resistance_ohm = rs_ohm;
     custom->kv_rating = kv;
     custom->base_duty_pct = base_duty;

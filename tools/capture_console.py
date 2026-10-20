@@ -152,6 +152,7 @@ def start_logging(session_id, log_file, redraw=False):
 
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "log", "off"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "logfile", abs_path], check=True)
+    subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "logfile", "flush", "1"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(["screen", "-S", session_id, "-p", "0", "-X", "log", "on"], check=True)
     print(f"Live stream logging STARTED on session '{session_id}' -> {abs_path}")
 

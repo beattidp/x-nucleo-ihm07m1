@@ -65,10 +65,12 @@ typedef struct MotorControl_s {
     bool pot_control_enabled;       /* Whether potentiometer actively controls target speed */
     float vf_slope_pct;             /* Back-EMF compensation slope (% duty across speed range) */
     float accel_slew_rpm_s;         /* Acceleration slew rate (RPM / second) */
+    float decel_slew_rpm_s;         /* Deceleration slew rate (RPM / second) */
     float min_rpm;                  /* Minimum RPM */
     float max_rpm;                  /* Maximum RPM */
     float phase_resistance_ohm;     /* Motor phase resistance in Ohms */
     float kv_rating;                /* Motor velocity constant (RPM/V) */
+    bool foc_closed_loop;           /* True if active closed-loop FOC current regulation is engaged */
 } MotorControl_t;
 
 /* Core Motor Control API */
@@ -88,6 +90,8 @@ void Motor_DecTorqueLimit(void);
 void Motor_SetSpeed(float rpm);
 void Motor_SetDirection(int8_t dir);
 void Motor_SetMode(MotorMode_t mode);
+void Motor_ToggleClosedLoopFOC(void);
+bool Motor_IsClosedLoopFOC(void);
 void Motor_TogglePotControl(void);
 void Motor_SetPotControl(bool enable);
 void Motor_ResetFault(void);

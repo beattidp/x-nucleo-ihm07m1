@@ -137,6 +137,10 @@ int main(void) {
                     case 'P':
                         Motor_TogglePotControl();
                         break;
+                    case 'f':
+                    case 'F':
+                        Motor_ToggleClosedLoopFOC();
+                        break;
                     case 'o':
                     case 'O':
                         if (ctrl->state == MOTOR_STATE_STOPPED) {

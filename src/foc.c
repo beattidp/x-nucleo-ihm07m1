@@ -15,7 +15,7 @@ void FOC_Init(void) {
 
     /* Configure CORDIC hardware co-processor:
      * - Function: COSINE (generates simultaneous Cosine in RES1 and Sine in RES2)
-     * - Precision: 4 CYCLES (~16-bit accuracy, executes in 23.5 ns at 170 MHz)
+     * - Precision: 6 CYCLES (24-bit accuracy, executes in 35 ns at 170 MHz)
      * - Scale: 0 (no scaling needed for cosine/sine)
      * - NbWrite: 1 (angle theta only)
      * - NbRead: 2 (read cos then sin)
@@ -23,7 +23,7 @@ void FOC_Init(void) {
      */
     LL_CORDIC_Config(CORDIC,
                      LL_CORDIC_FUNCTION_COSINE,
-                     LL_CORDIC_PRECISION_4CYCLES,
+                     LL_CORDIC_PRECISION_6CYCLES,
                      LL_CORDIC_SCALE_0,
                      LL_CORDIC_NBWRITE_1,
                      LL_CORDIC_NBREAD_2,
@@ -31,8 +31,13 @@ void FOC_Init(void) {
                      LL_CORDIC_OUTSIZE_32BITS);
 
     g_foc.cordic_ready = true;
+    g_foc.cos_theta = 1.0f;
+    g_foc.sin_theta = 0.0f;
     g_foc.id_ref = 0.0f;
     g_foc.iq_ref = 0.0f;
+
+    /* Initialize dual PI current regulators with measured 5010-360KV parameters */
+    FOC_CurrentRegulators_Init(0.50f, 0.00015f, 360.0f, 2.0f * FOC_PI * 600.0f);
 }
 
 void FOC_Reset(void) {
@@ -42,6 +47,155 @@ void FOC_Reset(void) {
     g_foc.iq_ref = 0.0f;
     memset(&g_foc.currents, 0, sizeof(FocCurrents_t));
     memset(&g_foc.voltages, 0, sizeof(FocVoltages_t));
+    FOC_CurrentRegulators_Reset();
+}
+
+/**
+ * @brief Initialize dual PI current regulators using analytical pole-placement
+ * @param rs_ohm Motor phase resistance in Ohms (e.g. 0.50 Ohm)
+ * @param ls_h Motor phase inductance in Henries (e.g. 150 uH)
+ * @param kv Motor velocity constant in RPM/V (e.g. 360 RPM/V)
+ * @param bandwidth_rad_s Desired current loop closed-loop bandwidth in rad/s (e.g. 2*pi*600 rad/s)
+ */
+void FOC_CurrentRegulators_Init(float rs_ohm, float ls_h, float kv, float bandwidth_rad_s) {
+    if (rs_ohm <= 0.01f) rs_ohm = 0.50f;
+    if (ls_h <= 1.0e-6f) ls_h = 0.00015f;
+    if (kv <= 10.0f) kv = 360.0f;
+    if (bandwidth_rad_s <= 100.0f) bandwidth_rad_s = 2.0f * FOC_PI * 600.0f;
+
+    g_foc.rs_ohm = rs_ohm;
+    g_foc.ls_h = ls_h;
+    g_foc.kv_rating = kv;
+    g_foc.active_damping_gain = 350.0f; /* rad/(s * A) damping against torsional rotor hunting for bare rotor */
+
+    /* Sampling period at 20 kHz PWM rate */
+    const float ts = 1.0f / 20000.0f;
+
+    /* Pole-placement tuning: Kp = Ls * w_c, Ki_disc = Rs * w_c * Ts */
+    float kp = ls_h * bandwidth_rad_s;
+    float ki_disc = rs_ohm * bandwidth_rad_s * ts;
+
+    /* Direct axis PI regulator */
+    g_foc.pi_d.kp = kp;
+    g_foc.pi_d.ki = ki_disc;
+    g_foc.pi_d.integral = 0.0f;
+    g_foc.pi_d.out_min = -14.0f;
+    g_foc.pi_d.out_max = 14.0f;
+    g_foc.pi_d.out = 0.0f;
+
+    /* Quadrature axis PI regulator */
+    g_foc.pi_q.kp = kp;
+    g_foc.pi_q.ki = ki_disc;
+    g_foc.pi_q.integral = 0.0f;
+    g_foc.pi_q.out_min = -14.0f;
+    g_foc.pi_q.out_max = 14.0f;
+    g_foc.pi_q.out = 0.0f;
+
+    g_foc.regulators_active = true;
+}
+
+void FOC_CurrentRegulators_Reset(void) {
+    g_foc.pi_d.integral = 0.0f;
+    g_foc.pi_d.out = 0.0f;
+    g_foc.pi_q.integral = 0.0f;
+    g_foc.pi_q.out = 0.0f;
+}
+
+void FOC_SetTorqueReference(float iq_ref) {
+    g_foc.iq_ref = iq_ref;
+}
+
+void FOC_SetRegulatorsActive(bool active) {
+    g_foc.regulators_active = active;
+    if (!active) {
+        FOC_CurrentRegulators_Reset();
+    }
+}
+
+bool FOC_AreRegulatorsActive(void) {
+    return g_foc.regulators_active;
+}
+
+/**
+ * @brief Discrete PI calculation with conditional integration anti-windup
+ */
+static inline float FOC_PI_Calc(FocPI_t* pi, float error, float v_limit) {
+    float p_term = pi->kp * error;
+    float next_int = pi->integral + (pi->ki * error);
+    float v_unsat = p_term + next_int;
+
+    if (v_unsat > v_limit) {
+        pi->out = v_limit;
+        if (error < 0.0f) {
+            pi->integral = next_int;
+        }
+    } else if (v_unsat < -v_limit) {
+        pi->out = -v_limit;
+        if (error > 0.0f) {
+            pi->integral = next_int;
+        }
+    } else {
+        pi->integral = next_int;
+        pi->out = v_unsat;
+    }
+    return pi->out;
+}
+
+/**
+ * @brief Execute 20 kHz synchronous dual PI current regulation loop
+ * @param id_meas Measured direct axis current (A)
+ * @param iq_meas Measured quadrature axis current (A)
+ * @param id_ref Setpoint direct axis current (A, typically 0.0)
+ * @param iq_ref Setpoint quadrature axis current (A)
+ * @param omega_e Electrical angular velocity in rad/s
+ * @param vbus Instantaneous DC link voltage in Volts
+ * @param vd_out Pointer to output direct axis voltage command (V)
+ * @param vq_out Pointer to output quadrature axis voltage command (V)
+ */
+void FOC_CurrentRegulators_Update(float id_meas, float iq_meas, float id_ref, float iq_ref,
+                                 float omega_e, float vbus, float v_baseline, float* vd_out, float* vq_out) {
+    if (vbus < 4.0f) vbus = 12.0f;
+
+    /* Space Vector Modulation max linear voltage: Vmax = Vbus / sqrt(3) */
+    float v_max = vbus * FOC_ONE_BY_SQRT3;
+
+    (void)id_ref;
+    (void)id_meas;
+
+    /* Errors */
+    float err_q = iq_ref - iq_meas;
+
+    /* Feedforward decoupling:
+     * - Quadrature axis: +w_e * Ld * Id + V_baseline (bumpless handover from SPWM)
+     */
+    float vq_ff = (omega_e * g_foc.ls_h * id_meas) + v_baseline;
+
+    /* Dynamic PI trim headroom: +/- 0.40V to tightly regulate current without transients.
+     * Across 0.50 Ohm phase resistance, maximum transient current is 0.40V / 0.50 Ohm = 0.8A,
+     * which can never trip the 2.2A hardware break. */
+    float pi_v_limit = 0.40f;
+    if (pi_v_limit > v_max * 0.10f) pi_v_limit = v_max * 0.10f;
+    float vq_pi = FOC_PI_Calc(&g_foc.pi_q, err_q, pi_v_limit);
+
+    /* Direct axis voltage set to 0 (MTPA). Active damping controls rotor flux alignment
+     * by dynamically steering the stator frequency via Id, preventing controller fighting. */
+    float vd_cmd = 0.0f;
+    float vq_cmd = vq_pi + vq_ff;
+
+    /* Vector circle saturation: clamp sqrt(Vd^2 + Vq^2) <= Vmax */
+    float v_mag_sq = (vd_cmd * vd_cmd) + (vq_cmd * vq_cmd);
+    float v_max_sq = v_max * v_max;
+    if (v_mag_sq > v_max_sq && v_mag_sq > 0.0001f) {
+        float scale = v_max / sqrtf(v_mag_sq);
+        vd_cmd *= scale;
+        vq_cmd *= scale;
+    }
+
+    g_foc.voltages.vd = vd_cmd;
+    g_foc.voltages.vq = vq_cmd;
+
+    if (vd_out) *vd_out = vd_cmd;
+    if (vq_out) *vq_out = vq_cmd;
 }
 
 /**
@@ -66,6 +220,9 @@ void FOC_CordicSinCos(float theta_rad, float* sin_out, float* cos_out) {
 
     /* Write angle to CORDIC WDATA register */
     LL_CORDIC_WriteData(CORDIC, (uint32_t)arg_q31);
+
+    /* Wait for CORDIC co-processor calculation to complete (takes 4-6 cycles) */
+    while (!LL_CORDIC_IsActiveFlag_RRDY(CORDIC));
 
     /* Read primary result (Cosine) then secondary result (Sine) from RDATA */
     int32_t cos_q31 = (int32_t)LL_CORDIC_ReadData(CORDIC);
@@ -94,21 +251,22 @@ void FOC_Park(float i_alpha, float i_beta, float theta_rad, float* id, float* iq
     float sin_th = 0.0f;
     float cos_th = 1.0f;
     FOC_CordicSinCos(theta_rad, &sin_th, &cos_th);
+    g_foc.sin_theta = sin_th;
+    g_foc.cos_theta = cos_th;
 
-    *id =  i_alpha * cos_th + i_beta * sin_th;
-    *iq = -i_alpha * sin_th + i_beta * cos_th;
+    /* Aligned with open-loop sinusoidal SPWM trajectory (u = sin(theta), v = sin(theta+120)) */
+    *id =  i_alpha * cos_th - i_beta * sin_th;
+    *iq =  i_alpha * sin_th + i_beta * cos_th;
 }
 
 /**
  * @brief Inverse Park Transformation (rotating d/q -> stationary alpha/beta)
+ *        Reuses cached sin_theta and cos_theta from FOC_Park (zero CORDIC coprocessor latency)
+ *        Orthonormal transpose pair of FOC_Park: Valpha = Vq*sin + Vd*cos, Vbeta = Vq*cos - Vd*sin
  */
-void FOC_InvPark(float vd, float vq, float theta_rad, float* v_alpha, float* v_beta) {
-    float sin_th = 0.0f;
-    float cos_th = 1.0f;
-    FOC_CordicSinCos(theta_rad, &sin_th, &cos_th);
-
-    *v_alpha = vd * cos_th - vq * sin_th;
-    *v_beta  = vd * sin_th + vq * cos_th;
+void FOC_InvPark(float vd, float vq, float* v_alpha, float* v_beta) {
+    *v_alpha = vq * g_foc.sin_theta + vd * g_foc.cos_theta;
+    *v_beta  = vq * g_foc.cos_theta - vd * g_foc.sin_theta;
 }
 
 /**

@@ -220,7 +220,7 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Phase & FOC Currents (mA)  : \r\n");
     printf(" HW Trip Limit & Peak Curr  : \r\n");
     printf("  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  \r\n");
-    printf("  [[ / ]] Duty     | [S<rpm>] Speed| [B] Brake     | [Z] Zero Rev | [R] Reset\r\n");
+    printf("  [F] FOC Loop     | [S<rpm>] Speed| [B] Brake     | [Z] Zero Rev | [R] Reset\r\n");
     printf("==============================================================================\r\n");
 }
 
@@ -275,6 +275,7 @@ typedef struct {
     bool motor_slipping;
     MotorState_t state;
     MotorMode_t mode;
+    bool foc_loop;
     uint8_t prof_idx;
     int target_speed_rpm;
     int actual_speed_rpm;
@@ -444,11 +445,18 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     }
 
     /* 9. Control Strategy: Row 19, Col 31 */
-    if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode) {
-        const char* mode_str = (ctrl->mode == MOTOR_MODE_OPEN_LOOP_CHAR) ? "STAGE 1: OPEN-LOOP V/F (SENSORLESS)" :
-                               (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) ? "STAGE 2: 6-STEP VOLTAGE MODE" : "STAGE 3: 4-QUADRANT FOC";
+    if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode || ctrl->foc_closed_loop != s_main_shadow.foc_loop) {
+        const char* mode_str;
+        if (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) {
+            mode_str = "STAGE 2: 6-STEP VOLTAGE MODE       ";
+        } else if (ctrl->foc_closed_loop) {
+            mode_str = "\033[1;32mSTAGE 3: FOC DUAL PI REGULATOR (ON)\033[0m ";
+        } else {
+            mode_str = "STAGE 1: OPEN-LOOP V/F (PRESS 'F') ";
+        }
         printf("\033[19;31H%-35s", mode_str);
         s_main_shadow.mode = ctrl->mode;
+        s_main_shadow.foc_loop = ctrl->foc_closed_loop;
     }
 
     /* 10. Active Motor Profile: Row 20, Col 31 */
