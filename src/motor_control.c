@@ -306,6 +306,7 @@ void Motor_Stop(void) {
     PowerStage_DisableBridge();
     PowerStage_StopPWM();
     FOC_Reset();
+    Motor_CalibrateCurrentOffsets();
 }
 
 void Motor_Brake(void) {
@@ -367,6 +368,7 @@ void Motor_ResetFault(void) {
     if (g_motor_ctrl.state == MOTOR_STATE_FAULT) {
         g_motor_ctrl.state = MOTOR_STATE_STOPPED;
     }
+    Motor_CalibrateCurrentOffsets();
 }
 
 void Motor_ResetOpticalCount(void) {

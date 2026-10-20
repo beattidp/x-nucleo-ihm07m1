@@ -235,12 +235,14 @@ void FOC_CordicSinCos(float theta_rad, float* sin_out, float* cos_out) {
 
 /**
  * @brief Forward Clarke Transformation (3-phase abc -> stationary alpha/beta)
- *        Assumes balanced 3-phase system with isolated neutral (Ia + Ib + Ic = 0)
+ *        Symmetrical 3-shunt formulation with common-mode offset rejection:
+ *        I_alpha = Ia - (Ia + Ib + Ic)/3
+ *        I_beta  = (Ib - Ic) / sqrt(3)
  */
 void FOC_Clarke(float ia, float ib, float ic, float* i_alpha, float* i_beta) {
-    (void)ic;
-    *i_alpha = ia;
-    *i_beta  = (ia + 2.0f * ib) * FOC_ONE_BY_SQRT3;
+    float i_zero = (ia + ib + ic) * (1.0f / 3.0f);
+    *i_alpha = ia - i_zero;
+    *i_beta  = (ib - ic) * FOC_ONE_BY_SQRT3;
 }
 
 /**
