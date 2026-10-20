@@ -88,6 +88,7 @@ void Motor_SetTorqueLimit(float amps);
 void Motor_IncTorqueLimit(void);
 void Motor_DecTorqueLimit(void);
 void Motor_SetSpeed(float rpm);
+void Motor_SetSlewRates(float accel_slew_rpm_s, float decel_slew_rpm_s);
 void Motor_SetDirection(int8_t dir);
 void Motor_SetMode(MotorMode_t mode);
 void Motor_ToggleClosedLoopFOC(void);

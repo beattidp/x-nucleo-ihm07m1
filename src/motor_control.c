@@ -291,10 +291,19 @@ void Motor_DecDuty(void) {
 
 void Motor_SetSpeed(float rpm) {
     if (rpm < 0.0f) rpm = 0.0f;
-    if (rpm > 6000.0f) rpm = 6000.0f;
+    if (rpm > 6500.0f) rpm = 6500.0f;
     g_motor_ctrl.target_speed_rpm = rpm;
     /* Electrical Hz = (RPM * pole_pairs) / 60 */
     g_motor_ctrl.electrical_freq_hz = (rpm * (float)g_motor_ctrl.pole_pairs) / 60.0f;
+}
+
+void Motor_SetSlewRates(float accel_slew_rpm_s, float decel_slew_rpm_s) {
+    if (accel_slew_rpm_s < 20.0f) accel_slew_rpm_s = 20.0f;
+    if (accel_slew_rpm_s > 5000.0f) accel_slew_rpm_s = 5000.0f;
+    if (decel_slew_rpm_s < 20.0f) decel_slew_rpm_s = 20.0f;
+    if (decel_slew_rpm_s > 5000.0f) decel_slew_rpm_s = 5000.0f;
+    g_motor_ctrl.accel_slew_rpm_s = accel_slew_rpm_s;
+    g_motor_ctrl.decel_slew_rpm_s = decel_slew_rpm_s;
 }
 
 void Motor_SetDirection(int8_t dir) {
@@ -769,14 +778,21 @@ void Motor_PWM_UpdateISR(void) {
 
         /* 1. Advance 32-bit phase accumulator for the upcoming PWM period */
         int32_t damping_correction = 0;
+        static float s_id_dc = 0.0f;
         if (g_motor_ctrl.foc_closed_loop && FOC_AreRegulatorsActive() && 
             (g_motor_ctrl.state == MOTOR_STATE_RUNNING || g_motor_ctrl.state == MOTOR_STATE_STARTING) && 
             g_motor_ctrl.actual_speed_rpm >= 400.0f) {
-            float d_rad_s = -g_foc.currents.id * g_foc.active_damping_gain;
+            /* DC Tracking Filter (cutoff ~6 Hz at 20 kHz): rejects stationary harmonic sampling aliases & DC offset */
+            s_id_dc = (s_id_dc * 0.998f) + (g_foc.currents.id * 0.002f);
+            float id_ac = g_foc.currents.id - s_id_dc;
+
+            float d_rad_s = -id_ac * g_foc.active_damping_gain;
             /* Clamp damping frequency correction to +/- 10 Hz (+/- 62.8 rad/s) */
             if (d_rad_s > 62.8f) d_rad_s = 62.8f;
             else if (d_rad_s < -62.8f) d_rad_s = -62.8f;
             damping_correction = (int32_t)(d_rad_s * 34178.0f);
+        } else {
+            s_id_dc = 0.0f;
         }
         s_phase_accum += (uint32_t)(s_phase_step + damping_correction);
 

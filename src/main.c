@@ -75,6 +75,8 @@ int main(void) {
             } else {
                 static bool s_in_speed_entry = false;
                 static uint32_t s_speed_entry_val = 0;
+                static bool s_in_accel_entry = false;
+                static uint32_t s_accel_entry_val = 0;
 
                 if (s_in_speed_entry) {
                     if (ch >= '0' && ch <= '9') {
@@ -92,7 +94,27 @@ int main(void) {
                     }
                 }
 
+                if (s_in_accel_entry) {
+                    if (ch >= '0' && ch <= '9') {
+                        s_accel_entry_val = s_accel_entry_val * 10 + (uint32_t)(ch - '0');
+                        continue;
+                    } else if (ch == '\r' || ch == '\n' || ch == ' ') {
+                        if (s_accel_entry_val >= 20 && s_accel_entry_val <= 5000) {
+                            Motor_SetSlewRates((float)s_accel_entry_val, (float)s_accel_entry_val);
+                        }
+                        s_in_accel_entry = false;
+                        continue;
+                    } else {
+                        s_in_accel_entry = false;
+                    }
+                }
+
                 switch (ch) {
+                    case 'a':
+                    case 'A':
+                        s_in_accel_entry = true;
+                        s_accel_entry_val = 0;
+                        break;
                     case 's':
                     case 'S':
                         s_in_speed_entry = true;

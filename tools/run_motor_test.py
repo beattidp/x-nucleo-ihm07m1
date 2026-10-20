@@ -100,7 +100,7 @@ def adjust_target_rpm(session_id, target_rpm):
     print(f"Set target RPM directly to {target_rpm} RPM.")
 
 
-def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
+def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0, slew_rate=None):
     """Applies profile, speed, and duty configurations while stopped."""
     if profile is not None:
         if profile not in [1, 2, 3, 4]:
@@ -108,6 +108,11 @@ def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0):
         print(f"Selecting Motor Profile {profile}...")
         send_keystroke(session_id, str(profile))
         time.sleep(0.3)
+
+    if slew_rate is not None:
+        print(f"Setting slew rate directly to {int(slew_rate)} RPM/s...")
+        send_keystroke(session_id, f"a{int(slew_rate)}\r")
+        time.sleep(0.1)
 
     if target_rpm is not None:
         print(f"Setting target RPM to {target_rpm}...")
@@ -296,6 +301,7 @@ def main():
     parser.add_argument("--no-decel", action="store_true", help="Disable deceleration ladder in voltage targets")
     parser.add_argument("--step-duration", type=float, default=12.0, help="Duration per speed step in seconds (default: 12.0s)")
     parser.add_argument("--duty-adjust", type=int, default=0, help="Duty adjustment steps (+ for ], - for [)")
+    parser.add_argument("--slew", type=float, default=None, help="Acceleration & deceleration slew rate in RPM/s (e.g. 500, 1000)")
     parser.add_argument("--duration", "-d", type=float, default=6.0, help="Run duration in seconds (default: 6.0s)")
     parser.add_argument("--output-dir", default="test_runs", help="Directory to save logs and CSVs")
     args = parser.parse_args()
@@ -321,7 +327,7 @@ def main():
     print(f"Starting automated motor test on screen session '{session_id}'...")
     ensure_stopped(session_id)
 
-    configure_test(session_id, profile=args.profile, target_rpm=init_rpm, duty_adjust=args.duty_adjust)
+    configure_test(session_id, profile=args.profile, target_rpm=init_rpm, duty_adjust=args.duty_adjust, slew_rate=args.slew)
 
     # Start stream logging
     start_logging(session_id, log_file, redraw=True)

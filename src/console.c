@@ -220,7 +220,7 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Phase & FOC Currents (mA)  : \r\n");
     printf(" HW Trip Limit & Peak Curr  : \r\n");
     printf("  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  \r\n");
-    printf("  [F] FOC Loop     | [S<rpm>] Speed| [B] Brake     | [Z] Zero Rev | [R] Reset\r\n");
+    printf("  [F] FOC Loop     | [S<rpm>] Speed| [A<slew>] Slew| [Z] Zero Rev | [R] Reset\r\n");
     printf("==============================================================================\r\n");
 }
 
@@ -282,6 +282,7 @@ typedef struct {
     int line21_optical_rpm;
     int8_t direction;
     float torque_limit_amps;
+    float accel_slew_rpm_s;
     float active_duty_pct;
     float duty_pct;
     int ia_ma;
@@ -484,10 +485,12 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
         s_main_shadow.line21_optical_rpm = opt_rpm_int;
     }
 
-    /* 12. Commanded Torque Limit: Row 22, Col 31 */
-    if (!s_main_shadow.valid || fabsf(ctrl->torque_limit_amps - s_main_shadow.torque_limit_amps) >= 0.05f) {
-        printf("\033[22;31H%4.2f A (Software Regulated Ceiling)", ctrl->torque_limit_amps);
+    /* 12. Commanded Torque Limit & Slew Rate: Row 22, Col 31 */
+    if (!s_main_shadow.valid || fabsf(ctrl->torque_limit_amps - s_main_shadow.torque_limit_amps) >= 0.05f ||
+        fabsf(ctrl->accel_slew_rpm_s - s_main_shadow.accel_slew_rpm_s) >= 1.0f) {
+        printf("\033[22;31H%4.2f A | Slew: %4.0f RPM/s          ", ctrl->torque_limit_amps, ctrl->accel_slew_rpm_s);
         s_main_shadow.torque_limit_amps = ctrl->torque_limit_amps;
+        s_main_shadow.accel_slew_rpm_s = ctrl->accel_slew_rpm_s;
     }
 
     /* 13. Active Modulated Duty: Row 23, Col 31 */
