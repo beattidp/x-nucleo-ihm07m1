@@ -132,4 +132,28 @@ void TIM3_IRQHandler(void) {
 | **PB11 on TIM2** | `TIM2` (32-bit native) | PB11 (CN10 Pin 18) | 32-bit (71.5 min) | Zero | **No** (TIM2 counter is reset by Hall XOR) |
 | **Single 16-bit Timer** | `TIM3` (16-bit) | PC6 (CN10 Pin 4) | 16-bit (65.5 ms) | Zero | Yes, but fails below 915 RPM |
 | **Software-Extended 16-bit** | `TIM3` + Update ISR | PC6 (CN10 Pin 4) | 32-bit (71.5 min) | Interrupt every 65.5 ms (15.2 Hz) | Yes |
-| **Cascaded Hardware Timers (Proposed)** | `TIM3` (Master) + `TIM4` (Slave) | PC6 (CN10 Pin 4) | 32-bit (71.5 min) | **Zero** counting overhead | **Yes** (100% independent of TIM2 Hall mode) |
+| **Cascaded Hardware Timers (Validated)** | `TIM3` (Master) + `TIM4` (Slave) | PC6 (CN10 Pin 4) | 32-bit (71.5 min) | **Zero** counting overhead | **Yes** (100% independent of TIM2 Hall mode) |
+
+---
+
+## 5. Empirical Hardware Verification Results
+
+The physical detector was relocated to Morpho **CN10 Pin 4 (`PC6`)** for signal and **CN10 Pin 9 (`GND`)** for ground, freeing connector **J3** completely (see [`doc/img/20261020T140607.jpg`](file:///home/beattidp/Documents/antigravity/x-nucleo-ihm07m1/doc/img/20261020T140607.jpg)). Three distinct hardware verification profiles were executed on the test bench.
+
+### 5.1 Verification Test Summary
+
+| Test Run | Profile & Target Speeds | Total Revs | Optical RPM Result | Status | Key Finding / Behavior Verified |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Run 1** (`run_20261020_141825`) | 1728 RPM Steady Hold (8 s) | 164 revs | Exact 1728.0 RPM steady | `[PASS]` | Verified perfect synchronism and edge detection on PC6 (`TIM3_CH1`). |
+| **Run 2** (`run_20261020_141850`) | 16-bit Overflow Boundary ($288 \to 864$ RPM) | 109 revs | 287.0 RPM & 864.0 RPM | `[PASS]` | Verified cascaded 16-bit timer rollovers. At 288 RPM ($T = 208{,}333\,\mu\text{s}$), the timer rolled over 3 times per pulse with zero glitch or count loss. |
+| **Run 3** (`run_20261020_141917`) | 4-Stage Bidirectional Ladder ($864 \to 2880 \to 864 \to 288$ RPM) | 316 revs | Up to 2853 RPM | `[PASS]` | Verified dynamic tracking across wide dynamic range and acceleration/deceleration transitions. |
+
+### 5.2 Low-Speed Cascaded Overflow Analysis (Run 2)
+At 288 RPM:
+$$\Delta t_{\text{pulse}} = \frac{60}{288} = 0.208333\text{ s} = 208{,}333\,\mu\text{s}$$
+Since a 16-bit timer at $1\,\mu\text{s}$ resolution rolls over every $65{,}536\,\mu\text{s}$:
+$$N_{\text{rollover}} = \left\lfloor \frac{208{,}333}{65{,}536} \right\rfloor = 3\text{ full rollovers}$$
+During every single revolution at 288 RPM, `TIM3` rolled over 3 times and incremented `TIM4` via TRGO. The live double-read and ISR capture disambiguation logic reconstructed the 32-bit timestamps without dropping a single pulse or glitching the speed estimate.
+
+### 5.3 Deceleration Dynamics (Run 3)
+During rapid deceleration ($500\text{ RPM/s}$) from 864 RPM to 288 RPM, the open-loop commutated electrical ramp slewed ahead of the physical rotor inertia for one 250 ms sample window ($534\text{ RPM}$ real vs $343\text{ RPM}$ ramp, slip = 55%), correctly triggering the transient dashboard slip warning `[SLIPPING / VIBRATING]`. As the rotor settled to 288 RPM steady state, synchronism was restored (`[ROTATING - OK]`), demonstrating high sensitivity and fidelity of the tachometer telemetry.
