@@ -22,9 +22,25 @@ static volatile uint16_t s_rx_tail = 0;
 
 static volatile bool s_console_ready = false;
 
+/* Active communication mode: COMM_MODE_CONSOLE or COMM_MODE_SCPI */
+static CommMode_t s_comm_mode = COMM_MODE_CONSOLE;
+
 /* Active dashboard mode: 0 = uninitialized, 1 = main, 2 = characterization */
 static uint8_t s_active_dashboard_mode = 0;
 static bool s_force_full_redraw = true;
+
+void console_set_mode(CommMode_t mode) {
+    if (s_comm_mode != mode) {
+        s_comm_mode = mode;
+        if (s_comm_mode == COMM_MODE_CONSOLE) {
+            Console_RequestFullRedraw();
+        }
+    }
+}
+
+CommMode_t console_get_mode(void) {
+    return s_comm_mode;
+}
 
 void Console_RequestFullRedraw(void) {
     s_force_full_redraw = true;
@@ -118,6 +134,13 @@ int console_getch(void) {
         return ch;
     }
     return -1;
+}
+
+void console_ungetch(int ch) {
+    if (ch >= 0) {
+        s_rx_tail = (s_rx_tail - 1) & (CONSOLE_RX_BUF_SIZE - 1);
+        s_rx_buf[s_rx_tail] = (uint8_t)ch;
+    }
 }
 
 uint16_t console_tx_queue_len(void) {
@@ -332,6 +355,9 @@ static CharShadow_t s_char_shadow = {0};
  *        Typical 250ms refresh payload is ~120-180 bytes (<1.5 ms UART time, <6% link bandwidth).
  */
 void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t* ctrl, char heartbeat) {
+    if (s_comm_mode == COMM_MODE_SCPI) {
+        return;
+    }
     const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
 
     /* Check if full static background redraw is needed */
@@ -551,6 +577,9 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
  * @brief Render differential partial refresh of the motor characterization dashboard
  */
 void Console_RenderCharDashboard(const MotorTelemetry_t* telem, const MotorControl_t* ctrl, char heartbeat) {
+    if (s_comm_mode == COMM_MODE_SCPI) {
+        return;
+    }
     (void)ctrl;
     const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
     uint8_t progress = MotorChar_GetProgressPct();

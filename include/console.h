@@ -20,12 +20,22 @@ void console_init(void);
 int console_write(const uint8_t *data, uint16_t len);
 int console_putc(char c);
 int console_getch(void);
+void console_ungetch(int ch);
 bool console_has_char(void);
 uint16_t console_tx_queue_len(void);
 
 /* Syscall hooks for standard newlib printf / scanf */
 int _write(int file, char *ptr, int len);
 int _read(int file, char *ptr, int len);
+
+/* Communication Mode */
+typedef enum {
+    COMM_MODE_CONSOLE = 0,
+    COMM_MODE_SCPI
+} CommMode_t;
+
+void console_set_mode(CommMode_t mode);
+CommMode_t console_get_mode(void);
 
 /* Dashboard rendering & partial refresh */
 void Console_RenderDashboard(const struct MotorTelemetry_s* telem, const struct MotorControl_s* ctrl, char heartbeat);

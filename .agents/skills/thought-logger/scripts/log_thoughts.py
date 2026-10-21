@@ -282,6 +282,25 @@ def main():
             f.write(markdown_content)
 
         sys.stderr.write(f"Successfully synced {sum(len(t['steps']) for t in turns)} thought steps to {output_path}\n")
+
+        # Submodule Context: Mirror relevant turns to lib/scpi/doc/ThoughtLog.md if present
+        scpi_doc_dir = os.path.join(workspace, "lib", "scpi", "doc")
+        if os.path.isdir(scpi_doc_dir):
+            scpi_turns = []
+            for t in turns:
+                t_matches = False
+                for s in t.get("steps", []):
+                    if any("lib/scpi" in tool for tool in s.get("tools", [])) or "lib/scpi" in s.get("thinking", "") or "scpi" in t.get("user_prompt", "").lower():
+                        t_matches = True
+                        break
+                if t_matches:
+                    scpi_turns.append(t)
+            if scpi_turns:
+                scpi_output = os.path.join(scpi_doc_dir, "ThoughtLog.md")
+                scpi_md = generate_markdown(conv_id, scpi_turns)
+                with open(scpi_output, "w", encoding="utf-8") as f:
+                    f.write(scpi_md)
+                sys.stderr.write(f"Synced {sum(len(t['steps']) for t in scpi_turns)} thought steps to {scpi_output}\n")
     except Exception as e:
         sys.stderr.write(f"Error logging thoughts: {e}\n")
         if hook_data:

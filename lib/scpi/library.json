@@ -1,0 +1,22 @@
+{
+  "name": "scpi",
+  "version": "1.0.0",
+  "description": "Zero-heap, object-oriented embedded SCPI (IEEE 488.2) parser for STM32 and microcontroller test fixtures",
+  "keywords": "scpi, ieee488, test, measurement, instrument, embedded",
+  "authors": [
+    {
+      "name": "Antigravity Engineering",
+      "maintainer": true
+    }
+  ],
+  "license": "BSD-3-Clause",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src",
+    "flags": [
+      "-I include"
+    ]
+  }
+}

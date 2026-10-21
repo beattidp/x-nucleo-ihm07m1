@@ -4,6 +4,7 @@
 #include "motor_control.h"
 #include "motor_profiles.h"
 #include "motor_characterization.h"
+#include "flywheel_scpi.h"
 
 static void MX_GPIO_Init(void);
 
@@ -23,6 +24,9 @@ int main(void) {
     /* 5. Initialize Power Stage driver and motor control engine */
     Motor_Init();
 
+    /* 6. Initialize SCPI parser with flywheel fixture command bindings */
+    FlywheelScpi_Init();
+
     /* Initial banner displaying detected/active power stage capabilities */
     const PowerStageCapabilities_t* caps = PowerStage_GetCapabilities();
     printf("\r\n");
@@ -30,6 +34,7 @@ int main(void) {
     printf("  STM32G474RE + %s -- 3-PHASE BLDC MOTOR EVALUATION SYSTEM        \r\n",
            caps ? caps->board_name : "POWER STAGE");
     printf("  Console : LPUART1 (PA2-TX, PA3-RX) @ 115200 baud                              \r\n");
+    printf("  SCPI    : Standard IEEE 488.2 Active (Auto-switch on '*' / ':' or hotkey '#') \r\n");
     printf("  Driver  : %-60s\r\n", caps ? caps->driver_ic : "Unknown");
     printf("  PWM     : TIM1 CH1..3 @ 20 kHz Center-Aligned (ARR = %u)                       \r\n",
            caps ? caps->pwm_arr : 4249);
@@ -55,10 +60,18 @@ int main(void) {
     while (1) {
         uint32_t now = HAL_GetTick();
 
-        /* Handle Console Interactive Keystrokes */
-        int ch = console_getch();
-        if (ch != -1) {
-            const MotorControl_t* ctrl = Motor_GetControl();
+        if (console_get_mode() == COMM_MODE_SCPI) {
+            FlywheelScpi_Process();
+        } else {
+            /* Handle Console Interactive Keystrokes */
+            int ch = console_getch();
+            if (ch != -1) {
+                if (ch == '*' || ch == ':') {
+                    console_ungetch(ch);
+                    console_set_mode(COMM_MODE_SCPI);
+                    continue;
+                }
+                const MotorControl_t* ctrl = Motor_GetControl();
 
             /* If in characterization mode, handle characterization navigation keys */
             if (ctrl->state == MOTOR_STATE_CHARACTERIZING) {
@@ -223,11 +236,16 @@ int main(void) {
                         }
                         Motor_Stop();
                         break;
+                    case '#':
+                    case '@':
+                        console_set_mode(COMM_MODE_SCPI);
+                        break;
                     default:
                         break;
                 }
             }
         }
+    }
 
         /* Check B1 Button (PC13 - Active LOW) */
         static uint8_t btn_prev = 0xFF;
