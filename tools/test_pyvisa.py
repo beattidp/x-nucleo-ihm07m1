@@ -40,9 +40,11 @@ def run_pyvisa_test(resource_name, baud_rate):
             print("and detach or exit them before running PyVISA automation.")
         return False
 
+    from pyvisa.constants import BufferType
+
     # Standard SCPI termination configuration
-    inst.read_termination = "\n"
-    inst.write_termination = "\n"
+    inst.read_termination = "\r\n"
+    inst.write_termination = "\r\n"
     inst.timeout = 2000  # 2000 ms timeout
 
     print("\n================================================================================")
@@ -52,12 +54,18 @@ def run_pyvisa_test(resource_name, baud_rate):
     try:
         # Step 1: Switch from interactive ANSI console to SCPI protocol mode
         print("[1/8] Setting communication mode to SCPI...")
+        # Sending trigger string to force switch if target was in console mode
         inst.write(":SYST:COMM:MODE SCPI")
-        time.sleep(0.1)
+        time.sleep(0.3)
+        # Flush any in-flight console escape sequences from the OS buffer
+        try:
+            inst.flush(BufferType.io_in)
+        except Exception:
+            pass
 
         # Step 2: Query IEEE 488.2 Identification
         print("[2/8] Querying *IDN? (Identification Query)...")
-        idn = inst.query("*IDN?")
+        idn = inst.query("*IDN?").strip()
         print(f"      Response: '{idn}'")
         assert "STM32G474RE" in idn or "STMicroelectronics" in idn, f"Unexpected *IDN?: {idn}"
         print("      PASS: Instrument identification confirmed.")
@@ -65,21 +73,21 @@ def run_pyvisa_test(resource_name, baud_rate):
         # Step 3: Clear Status and Check Operation Complete
         print("[3/8] Testing *CLS and *OPC?...")
         inst.write("*CLS")
-        opc = inst.query("*OPC?")
+        opc = inst.query("*OPC?").strip()
         print(f"      Response: '{opc}'")
         assert opc == "1", f"Unexpected *OPC? response: {opc}"
         print("      PASS: Operation Complete confirmed.")
 
         # Step 4: Query SCPI Error Queue
         print("[4/8] Querying :SYSTem:ERRor?...")
-        err = inst.query(":SYST:ERR?")
+        err = inst.query(":SYST:ERR?").strip()
         print(f"      Response: '{err}'")
         assert "0,\"No error\"" in err, f"Expected 0,'No error', got: {err}"
         print("      PASS: Error queue clean.")
 
         # Step 5: Measure DC Bus Voltage
         print("[5/8] Querying :MEASure:VOLTage:DC?...")
-        vbus_str = inst.query(":MEAS:VOLT:DC?")
+        vbus_str = inst.query(":MEAS:VOLT:DC?").strip()
         print(f"      Response: {vbus_str} V")
         vbus = float(vbus_str)
         assert 0.0 <= vbus <= 48.0, f"VBUS {vbus}V out of expected range"
@@ -88,7 +96,7 @@ def run_pyvisa_test(resource_name, baud_rate):
         # Step 6: Commanded Speed Setpoint & Query
         print("[6/8] Setting & Querying :SOURce:MOTor:SPEEd (450 RPM)...")
         inst.write(":SOUR:MOT:SPEE 450")
-        target_rpm_str = inst.query(":SOUR:MOT:SPEE?")
+        target_rpm_str = inst.query(":SOUR:MOT:SPEE?").strip()
         print(f"      Response: {target_rpm_str} RPM")
         target_rpm = float(target_rpm_str)
         assert abs(target_rpm - 450.0) < 1.0, f"Speed setpoint mismatch: {target_rpm}"
@@ -96,7 +104,7 @@ def run_pyvisa_test(resource_name, baud_rate):
 
         # Step 7: Multi-channel synchronized telemetry snapshot
         print("[7/8] Querying :MEASure:TELEmetry:ALL? (High-Speed Synchronized Snapshot)...")
-        telem_raw = inst.query(":MEAS:TELE:ALL?")
+        telem_raw = inst.query(":MEAS:TELE:ALL?").strip()
         print(f"      Response: '{telem_raw}'")
         fields = telem_raw.split(",")
         assert len(fields) == 12, f"Expected 12 telemetry fields, got {len(fields)}"

@@ -167,7 +167,7 @@ private:
     bool matchPattern(const char* pattern, const char* header, bool is_query);
     bool matchNode(const char* pat_node, size_t pat_len, const char* hdr_node, size_t hdr_len);
     void handleCommonCommand(const char* header, const char* params, bool is_query);
-    void handleSystemSubtree(const char* header, const char* params, bool is_query);
+    bool handleSystemSubtree(const char* header, const char* params, bool is_query);
 };
 
 } /* namespace scpi */

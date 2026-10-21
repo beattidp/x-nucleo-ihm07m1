@@ -410,8 +410,10 @@ void ScpiParser::executeSubcommand(char* cmd_str) {
     /* 2. System Subtree (:SYST:ERR?, :SYST:VERS?, etc.) */
     const char* norm_hdr = (header[0] == ':') ? (header + 1) : header;
     if (strncasecmp(norm_hdr, "SYST", 4) == 0) {
-        handleSystemSubtree(header, params, is_query);
-        return;
+        if (handleSystemSubtree(header, params, is_query)) {
+            return;
+        }
+        /* Fall through to custom command table if not handled by built-in system subtree */
     }
 
     /* 3. Device-Specific Command Table */
@@ -618,7 +620,7 @@ void ScpiParser::handleCommonCommand(const char* header, const char* params, boo
  * Built-in System Subsystem
  * ============================================================================ */
 
-void ScpiParser::handleSystemSubtree(const char* header, const char* params, bool is_query) {
+bool ScpiParser::handleSystemSubtree(const char* header, const char* params, bool is_query) {
     ScpiContext ctx(*this, header, params, is_query);
 
     /* Match :SYSTem:ERRor[:NEXT]? */
@@ -626,13 +628,15 @@ void ScpiParser::handleSystemSubtree(const char* header, const char* params, boo
         ScpiError err;
         m_error_queue.pop(err);
         ctx.replyPrintf("%d,\"%s\"", err.code, err.message);
+        return true;
     } else if (matchPattern("SYSTem:ERRor:COUNt?", header, is_query)) {
         ctx.replyInt((int32_t)m_error_queue.count());
+        return true;
     } else if (matchPattern("SYSTem:VERSion?", header, is_query)) {
         ctx.replyString("1999.0");
-    } else {
-        pushError(SCPI_ERR_UNDEFINED_HEADER);
+        return true;
     }
+    return false;
 }
 
 } /* namespace scpi */
