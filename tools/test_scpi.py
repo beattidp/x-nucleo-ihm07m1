@@ -16,7 +16,7 @@ import time
 try:
     import serial
 except ImportError:
-    print("Error: pyserial is required. Install via: pip install pyserial")
+    print("Error: pyserial is required. Install via: pip install -r requirements.txt")
     sys.exit(1)
 
 

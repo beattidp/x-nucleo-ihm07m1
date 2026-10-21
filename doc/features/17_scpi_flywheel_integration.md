@@ -169,9 +169,19 @@ Emits a single comma-separated line containing all synchronized channels in $< 1
 ## 5. Verification & Tooling
 
 ### Automated Verification Script (`tools/test_scpi.py`)
-Run the test script directly from host:
+Run the PySerial-based test suite directly from host:
 ```bash
 python3 tools/test_scpi.py --port /dev/ttyACM0 --baud 115200
+```
+
+### PyVISA Automation Script (`tools/test_pyvisa.py`)
+Run the pure-Python PyVISA test suite using the `pyvisa-py` backend:
+```bash
+# Install host dependencies
+pip install -r requirements.txt
+
+# Run PyVISA automated verification suite
+python3 tools/test_pyvisa.py --resource ASRL/dev/ttyACM0::INSTR --baud 115200
 ```
 
 ### Host Unit Test Suite (`lib/scpi/test/`)

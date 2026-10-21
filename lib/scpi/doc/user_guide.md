@@ -115,3 +115,39 @@ ser.write(b":OUTP OFF\n")
 ser.write(b":SYST:COMM:MODE CONSOLE\n")
 ser.close()
 ```
+
+### PyVISA Example (via `pyvisa-py`):
+```python
+import pyvisa
+import time
+
+# Initialize pure-python VISA backend
+rm = pyvisa.ResourceManager("@py")
+
+# Connect to ST-Link Virtual COM port at 115200 baud
+inst = rm.open_resource("ASRL/dev/ttyACM0::INSTR", baud_rate=115200)
+inst.read_termination = "\n"
+inst.write_termination = "\n"
+inst.timeout = 2000
+
+# Switch to SCPI mode
+inst.write(":SYST:COMM:MODE SCPI")
+time.sleep(0.1)
+
+# Query identification & DC bus voltage
+print("Instrument:", inst.query("*IDN?"))
+print("VBUS:", inst.query(":MEAS:VOLT:DC?"), "V")
+
+# Command speed & read synchronized telemetry snapshot
+inst.write(":SOUR:MOT:SPEE 1000")
+inst.write(":OUTP ON")
+telem = inst.query(":MEAS:TELE:ALL?").split(",")
+print("Telemetry Snapshot (12 channels):", telem)
+
+# Stop and restore console mode
+inst.write(":OUTP OFF")
+inst.write(":SYST:COMM:MODE CONSOLE")
+inst.close()
+rm.close()
+```
+
