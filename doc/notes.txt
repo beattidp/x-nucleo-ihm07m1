@@ -11,8 +11,6 @@ https://share.google/aimode/nhNxFQ9oXL6aiJPZX
 Currently using a power supply with no remote control,
 the WANPTEK WPS3010B.
 
-
-
 It is also possible to add programmatic control of the voltage
 via USB by using a different available power supply,
 the HANMATEK HM310T.
@@ -41,4 +39,26 @@ for M in Max:
 16 volt targets (4S): [192, 576, 1152, 1920, 2880, 4032]
 20 volt targets (5S): [240, 720, 1440, 2400, 3600, 5040]
 24 volt targets (6S): [288, 864, 1728, 2880, 4320, 6048]
+
+Design of an adjustable torque load for motor characterization
+https://share.google/aimode/VavZ7ruWdkHKtoJ6O
+
+Appropriate size of a brushed DC motor for dynamic loading of a 5010 360KV brushless motor
+https://share.google/aimode/DFruJhliqa5ZnKHp7
+
+The system's architecture features a non-scrolling console dashboard with real-time telemetry, motor status updates, and interactive control via UART commands. The console relies on specific drivers for LPUART, ANSI rendering, and a lightweight printf implementation. The core functionality includes HAL initialization, peripheral configuration, and a motor control state machine that supports various control modes.
+
+Reconfigure the serial console on LPUART1 (PA2 TX / PA3 RX),
+which maps directly to the onboard ST-LINK V3E Virtual COM Port
+by default via solder bridges SB17 and SB23 without conflicting
+with any shield pins.
+
+There is no host-side interface. It is only SCREEN at the moment.
+If there were a host-side interface with communication protocol,
+
+With the SCPI interface, values such as .accel_slew_rpm_s could be parameterized and even loaded from a JSON-based configuration, even updated with characterization data. Characterization data should allow entering a label (or enter for serialized default). Then the acceleration can be adjusted from the JSON configuration (which is read and updated as necessary).
+
+Or, if this can be stored in on-chip configuration memory, that might be a potentially useful interim solution.
+? on the STM32G474RE, is there EEPROM or other configuration area available for storing configuration data, and what amount if any?
+
 
