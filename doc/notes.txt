@@ -62,3 +62,6 @@ Or, if this can be stored in on-chip configuration memory, that might be a poten
 ? on the STM32G474RE, is there EEPROM or other configuration area available for storing configuration data, and what amount if any?
 
 
+interface board ("XL335B")
+ADXL335BCPZ accelerometer
+

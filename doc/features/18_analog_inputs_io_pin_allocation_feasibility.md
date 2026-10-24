@@ -83,3 +83,54 @@ To preserve the deterministic execution of the 20 kHz injected current sampling 
    - `CN10 Pin 20` and `CN7 Pin 8/19/20/22` provide system logic grounds adjacent to the measurement pins.
 3. **No Modification Required for 5 Channels**:
    - If only 5 analog inputs are required immediately, no hardware alterations of any kind are necessary.
+
+---
+
+## 6. Potentiometer Re-Routing & 7-Channel Analog Architecture
+
+### 6.1 Onboard Potentiometer Circuit Topology
+On the X-NUCLEO-IHM07M1 expansion shield:
+- Trimmer potentiometer **$R_{42}$ (100 k$\Omega$)** is connected between the `3V3` logic rail and `GND`.
+- The wiper terminal produces net **`SPEED`**, which connects directly to **$R_{78}$ (0 $\Omega$ SMD resistor)**.
+- The other terminal of $R_{78}$ connects to **`PB1`** (ST Morpho header **`CN10 Pin 24`**).
+- There is no buffer op-amp; the wiper is a passive resistive voltage divider ($0\text{ to }3.3\text{ V}$).
+
+### 6.2 Feasibility of Wiring the Potentiometer to Another Pin
+
+Yes, the potentiometer can be wired to another analog input, but the physical and electrical implementation depends on whether you are using the **onboard trimmer** or an **external potentiometer**:
+
+#### Approach 1: The "Zero-Bodge" 7-Channel Architecture (Recommended)
+Rather than physically modifying the potentiometer traces, leave the onboard trimmer $R_{42}$ connected to **`PB1`** (`CN10 Pin 24`). Then, route the 6 accelerometer channels to the remaining 6 pins:
+- **Accelerometers (6 Channels)**:
+  - $X_1$: `PA4` (Arduino `A2` / `CN7 Pin 32`, `ADC2_IN17`)
+  - $Y_1$: `PC4` (`CN10 Pin 34`, `ADC2_IN5`)
+  - $Z_1$: `PC5` (`CN10 Pin 6`, `ADC2_IN11`)
+  - $X_2$: `PB11` (`CN10 Pin 18`, `ADC2_IN14`)
+  - $Y_2$: `PB12` (`CN10 Pin 16`, `ADC4_IN3` or `ADC1_IN11`)
+  - $Z_2$: **`PC3`** (`CN7 Pin 37`, `ADC2_IN9` or `ADC1_IN9`) with $R_{59}$ ($0\,\Omega$) desoldered.
+- **Potentiometer (7th Channel)**:
+  - Stays on **`PB1`** (`CN10 Pin 24`, `ADC1_IN12` / `ADC3_IN1`).
+- **Advantage**: Requires modifying only **one 0 $\Omega$ resistor ($R_{59}$)** on the shield. Zero flying wires, zero solder cuts on the trimmer. All 7 analog inputs run concurrently.
+
+#### Approach 2: Re-Wiring the Onboard Trimmer to an Alternate Pin
+If `PB1` (`CN10 Pin 24`) is specifically desired for an accelerometer channel:
+1. **Disconnect $P_{B1}$**: Desolder/remove **$R_{78}$ (0 $\Omega$)** on the shield. This completely disconnects the trimmer wiper from $P_{B1}$, leaving `CN10 Pin 24` as a pure, high-impedance external input pin.
+2. **Fly Jumper Wire**: Solder a thin 30 AWG jumper wire from the wiper pad of $R_{42}$ (or the trimmer side pad of $R_{78}$) to an available analog pin on the header:
+   - To **`PC3`** (Morpho `CN7 Pin 37`): Requires removing $R_{59}$ ($0\,\Omega$) to isolate BEMF1.
+   - To **`PB0`** (Arduino `A3` / Morpho `CN7 Pin 34`): Requires removing $R_{60}$ ($0\,\Omega$) to isolate BEMF2.
+   - To **`PA7`** (Arduino `D11` / Morpho `CN10 Pin 15`): Requires removing $R_{63}$ ($0\,\Omega$) to isolate BEMF3.
+3. **Trade-off**: Requires desoldering two surface-mount resistors ($R_{78}$ plus $R_{59}$ or $R_{60}$) and soldering a flying bodge wire.
+
+#### Approach 3: External Remote Potentiometer (Panel Knob)
+If a panel-mounted rotary potentiometer is desired for manual speed adjustment while the two accelerometers take the primary pins:
+- Connect the 3-wire potentiometer harness (3.3V, GND, Wiper) to:
+  - **`PB0`** on **Arduino header `A3`** (Morpho `CN7 Pin 34`, `ADC1_IN15` / `ADC3_IN12`), removing $R_{60}$ ($0\,\Omega$) on the shield.
+  - Or **`PC3`** on Morpho `CN7 Pin 37` (`ADC12_IN9`), removing $R_{59}$ ($0\,\Omega$).
+- **Advantage**: The female Arduino/Morpho header provides direct screw-terminal or breadboard-jumper access without touching the onboard trimmer.
+
+#### Approach 4: Digital Quadrature Rotary Encoder (Eliminating Analog Drift)
+Instead of consuming an analog ADC channel for manual speed control:
+- Connect an incremental rotary encoder (with push-button) to **`PB8` / `PB9`** (Arduino `D14` / `D15`) or **`PB6` / `PB7`** (Arduino `D10` / Morpho `CN7:21`).
+- These pins have **zero shield connections** and support hardware timer encoder interface mode (`TIM4`).
+- **Advantage**: Preserves all 6 analog channels strictly for vibration sensing, eliminates analog potentiometer ADC noise/drift, and provides digital detented RPM step adjustment.
+
