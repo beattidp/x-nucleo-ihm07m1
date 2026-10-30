@@ -26,6 +26,8 @@ typedef struct {
     /* Measured / Characterized parameters */
     float phase_resistance_ohm;            /* Phase-to-neutral resistance Rs in Ohms */
     float kv_rating;                       /* Motor velocity constant Kv (RPM / Volt) */
+    float load_comp_v_per_amp;             /* Active IR load compensation gain (Volts / Ampere) */
+    float eddy_damping_ma_rpm;             /* Characterized eddy current brake damping (mA / RPM) */
     bool characterized;                    /* True if parameters were experimentally measured */
 } MotorProfile_t;
 
@@ -37,7 +39,8 @@ MotorProfile_t* MotorProfiles_GetActive(void);
 bool MotorProfiles_Select(uint8_t index);
 bool MotorProfiles_Next(void);
 void MotorProfiles_ApplyActiveToDrive(void);
-void MotorProfiles_SaveCharacterized(float rs_ohm, float kv, float base_duty, float vf_slope);
+void MotorProfiles_SaveCharacterized(float rs_ohm, float kv, float base_duty, float vf_slope,
+                                    float load_comp, float eddy_damping);
 
 #ifdef __cplusplus
 }

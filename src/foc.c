@@ -68,8 +68,8 @@ void FOC_CurrentRegulators_Init(float rs_ohm, float ls_h, float kv, float bandwi
     g_foc.kv_rating = kv;
     g_foc.active_damping_gain = 350.0f; /* rad/(s * A) damping against torsional rotor hunting for bare rotor */
 
-    /* Sampling period at 20 kHz PWM rate */
-    const float ts = 1.0f / 20000.0f;
+    /* Sampling period at 40 kHz PWM rate */
+    const float ts = 1.0f / 40000.0f;
 
     /* Pole-placement tuning: Kp = Ls * w_c, Ki_disc = Rs * w_c * Ts */
     float kp = ls_h * bandwidth_rad_s;

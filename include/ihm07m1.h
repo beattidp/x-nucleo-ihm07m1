@@ -13,10 +13,10 @@ extern TIM_HandleTypeDef htim2;
 extern ADC_HandleTypeDef hadc1;
 
 /* Timer Configuration */
-#define IHM07M1_PWM_FREQ_HZ         20000U
+#define IHM07M1_PWM_FREQ_HZ         40000U
 #define IHM07M1_TIM1_CLK_HZ         170000000U
-/* Center-aligned counter: period = (170M / 20k) / 2 = 4250 */
-#define IHM07M1_PWM_ARR             (4250U - 1U)
+/* Center-aligned counter: period = (170M / 40k) / 2 = 2125 */
+#define IHM07M1_PWM_ARR             (2125U - 1U)
 #define IHM07M1_PWM_MAX_DUTY        IHM07M1_PWM_ARR
 
 /* L6230 High-Side PWM Pins (TIM1 Channels 1, 2, 3) */

@@ -39,6 +39,8 @@ typedef struct {
     float ke_v_krpm;            /* Back-EMF constant V / kRPM */
     float recommended_base_duty;
     float recommended_vf_slope;
+    float eddy_damping_ma_rpm;  /* Characterized eddy current brake drag slope (mA / RPM) */
+    float recommended_load_comp;/* Recommended IR load compensation gain (V / A) */
 
     /* Status flags */
     bool valid;

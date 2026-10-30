@@ -55,7 +55,8 @@ typedef struct MotorControl_s {
     MotorState_t state;
     int8_t direction;               /* +1 for CW, -1 for CCW */
     float target_speed_rpm;         /* Target speed in RPM */
-    float actual_speed_rpm;         /* Measured or estimated RPM */
+    float actual_speed_rpm;         /* Measured or estimated rotor speed in RPM */
+    float cmd_ramp_rpm;             /* Decoupled commanded voltage ramp reference speed in RPM */
     float duty_pct;                 /* Commanded duty cycle (0.0 to 100.0%) */
     float electrical_freq_hz;       /* Commutation electrical frequency in Hz */
     uint8_t pole_pairs;             /* Motor pole pairs (default: 7) */
@@ -73,6 +74,9 @@ typedef struct MotorControl_s {
     float max_rpm;                  /* Maximum RPM */
     float phase_resistance_ohm;     /* Motor phase resistance in Ohms */
     float kv_rating;                /* Motor velocity constant (RPM/V) */
+    float load_comp_v_per_amp;      /* Load-adaptive IR compensation gain (Volts / Ampere) */
+    float eddy_damping_coeff_ma_rpm;/* Calibrated eddy current brake drag (mA / RPM) */
+    bool optical_governor_enabled;  /* True if optical tachometer closed-loop slip governor is active */
     bool foc_closed_loop;           /* True if active closed-loop FOC current regulation is engaged */
 } MotorControl_t;
 
@@ -96,6 +100,11 @@ void Motor_SetDirection(int8_t dir);
 void Motor_SetMode(MotorMode_t mode);
 void Motor_ToggleClosedLoopFOC(void);
 bool Motor_IsClosedLoopFOC(void);
+void Motor_ToggleOpticalGovernor(void);
+void Motor_SetOpticalGovernor(bool enable);
+bool Motor_IsOpticalGovernorEnabled(void);
+void Motor_SetLoadCompensation(float v_per_amp);
+float Motor_GetLoadCompensation(void);
 void Motor_TogglePotControl(void);
 void Motor_SetPotControl(bool enable);
 void Motor_ResetFault(void);

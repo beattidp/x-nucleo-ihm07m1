@@ -176,6 +176,10 @@ int main(void) {
                     case 'F':
                         Motor_ToggleClosedLoopFOC();
                         break;
+                    case 'g':
+                    case 'G':
+                        Motor_ToggleOpticalGovernor();
+                        break;
                     case 'o':
                     case 'O':
                         if (ctrl->state == MOTOR_STATE_STOPPED) {

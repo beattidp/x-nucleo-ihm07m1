@@ -214,7 +214,7 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf("   STM32G474RE + %-16s -- BLDC MOTOR EVALUATION DASHBOARD\r\n",
            caps ? caps->board_name : "POWER STAGE");
     printf("==============================================================================\r\n");
-    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 20 kHz\r\n");
+    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 40 kHz\r\n");
     printf(" Uptime :                                | \r\n");
     printf("------------------------------------------------------------------------------\r\n");
     printf(" POWER STAGE TELEMETRY (%s - %s)\r\n",
@@ -245,7 +245,7 @@ static void Console_RenderMainStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Phase & FOC Currents (mA)  : \r\n");
     printf(" HW Trip Limit & Peak Curr  : \r\n");
     printf("  [SPACE] Run/Stop | [1-4] Profile | [< / >] Speed | [+/-] Torque | [P] Pot  \r\n");
-    printf("  [F] FOC Loop     | [S<rpm>] Speed| [A<slew>] Slew| [Z] Zero Rev | [R] Reset\r\n");
+    printf("  [F] FOC Loop     | [G] Opt Governor | [S<rpm>] Speed | [Z] Zero Rev | [R] Reset\r\n");
     printf("==============================================================================\r\n");
 }
 
@@ -256,7 +256,7 @@ static void Console_RenderCharStaticTemplate(const PowerStageCapabilities_t* cap
     printf("   STM32G474RE + %-16s -- MOTOR CHARACTERIZATION ROUTINE\r\n",
            caps ? caps->board_name : "POWER STAGE");
     printf("==============================================================================\r\n");
-    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 20 kHz\r\n");
+    printf(" Port   : LPUART1 (PA2/PA3) @ 115200 | Clock: 170 MHz | PWM: 40 kHz\r\n");
     printf(" Status : \r\n");
     printf("------------------------------------------------------------------------------\r\n");
     printf(" TEST PROGRESS: [    ] [                    ]\r\n");
@@ -273,8 +273,9 @@ static void Console_RenderCharStaticTemplate(const PowerStageCapabilities_t* cap
     printf(" Phase Balance (U/V/W)      : \r\n");
     printf(" Stiction / Align Current   : \r\n");
     printf(" Speed Constant (Kv)        : \r\n");
-    printf(" Recommended Base Duty      : \r\n");
-    printf(" Recommended V/F Slope      : \r\n");
+    printf(" Eddy Brake Damping         : \r\n");
+    printf(" Recommended Base / V/F     : \r\n");
+    printf(" Recommended Load Comp      : \r\n");
     printf("==============================================================================\r\n");
     printf("                                                                              \r\n");
     printf("==============================================================================\r\n");
@@ -309,6 +310,7 @@ typedef struct {
     int8_t direction;
     float torque_limit_amps;
     float accel_slew_rpm_s;
+    float load_comp_v_per_amp;
     float active_duty_pct;
     float duty_pct;
     int ia_ma;
@@ -318,6 +320,7 @@ typedef struct {
     int id_ma;
     int iq_ma;
     float current_limit_amps;
+    bool optical_governor;
 } MainShadow_t;
 
 static MainShadow_t s_main_shadow = {0};
@@ -338,8 +341,10 @@ typedef struct {
     float min_duty;
     float kv;
     float ke;
+    float eddy_damping;
     float base_duty;
     float vf_slope;
+    float load_comp;
     CharState_t state;
 } CharShadow_t;
 
@@ -481,18 +486,24 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
     }
 
     /* 9. Control Strategy: Row 19, Col 31 */
-    if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode || ctrl->foc_closed_loop != s_main_shadow.foc_loop) {
+    if (!s_main_shadow.valid || ctrl->mode != s_main_shadow.mode || ctrl->foc_closed_loop != s_main_shadow.foc_loop ||
+        ctrl->optical_governor_enabled != s_main_shadow.optical_governor) {
         const char* mode_str;
         if (ctrl->mode == MOTOR_MODE_SIX_STEP_VOLTAGE) {
             mode_str = "STAGE 2: 6-STEP VOLTAGE MODE       ";
         } else if (ctrl->foc_closed_loop) {
-            mode_str = "\033[1;32mSTAGE 3: FOC DUAL PI REGULATOR (ON)\033[0m ";
+            mode_str = ctrl->optical_governor_enabled ?
+                       "\033[1;32mSTAGE 3: FOC + GOVERNOR (ON)\033[0m       " :
+                       "\033[1;32mSTAGE 3: FOC DUAL PI (ON)\033[0m          ";
         } else {
-            mode_str = "STAGE 1: OPEN-LOOP V/F (PRESS 'F') ";
+            mode_str = ctrl->optical_governor_enabled ?
+                       "STAGE 1: V/F + GOVERNOR (ON)       " :
+                       "STAGE 1: OPEN-LOOP V/F (PRESS 'F') ";
         }
         printf("\033[19;31H%-35s", mode_str);
         s_main_shadow.mode = ctrl->mode;
         s_main_shadow.foc_loop = ctrl->foc_closed_loop;
+        s_main_shadow.optical_governor = ctrl->optical_governor_enabled;
     }
 
     /* 10. Active Motor Profile: Row 20, Col 31 */
@@ -522,10 +533,13 @@ void Console_RenderDashboard(const MotorTelemetry_t* telem, const MotorControl_t
 
     /* 12. Commanded Torque Limit & Slew Rate: Row 22, Col 31 */
     if (!s_main_shadow.valid || fabsf(ctrl->torque_limit_amps - s_main_shadow.torque_limit_amps) >= 0.05f ||
-        fabsf(ctrl->accel_slew_rpm_s - s_main_shadow.accel_slew_rpm_s) >= 1.0f) {
-        printf("\033[22;31H%4.2f A | Slew: %4.0f RPM/s          ", ctrl->torque_limit_amps, ctrl->accel_slew_rpm_s);
+        fabsf(ctrl->accel_slew_rpm_s - s_main_shadow.accel_slew_rpm_s) >= 1.0f ||
+        fabsf(ctrl->load_comp_v_per_amp - s_main_shadow.load_comp_v_per_amp) >= 0.05f) {
+        printf("\033[22;31H%4.2f A | Slew: %4.0f RPM/s | Kcomp:%4.2fV/A",
+               ctrl->torque_limit_amps, ctrl->accel_slew_rpm_s, ctrl->load_comp_v_per_amp);
         s_main_shadow.torque_limit_amps = ctrl->torque_limit_amps;
         s_main_shadow.accel_slew_rpm_s = ctrl->accel_slew_rpm_s;
+        s_main_shadow.load_comp_v_per_amp = ctrl->load_comp_v_per_amp;
     }
 
     /* 13. Active Modulated Duty: Row 23, Col 31 */
@@ -649,13 +663,19 @@ void Console_RenderCharDashboard(const MotorTelemetry_t* telem, const MotorContr
                res->kv_rating, res->ke_v_krpm);
         s_char_shadow.kv = res->kv_rating;
     }
-    if (!s_char_shadow.valid || fabsf(res->recommended_base_duty - s_char_shadow.base_duty) >= 0.1f) {
-        printf("\033[21;31H%5.1f %%", res->recommended_base_duty);
-        s_char_shadow.base_duty = res->recommended_base_duty;
+    if (!s_char_shadow.valid || fabsf(res->eddy_damping_ma_rpm - s_char_shadow.eddy_damping) >= 0.05f) {
+        printf("\033[21;31H%5.2f mA / RPM (Drag Slope)       ", res->eddy_damping_ma_rpm);
+        s_char_shadow.eddy_damping = res->eddy_damping_ma_rpm;
     }
-    if (!s_char_shadow.valid || fabsf(res->recommended_vf_slope - s_char_shadow.vf_slope) >= 0.1f) {
-        printf("\033[22;31H%5.1f %%", res->recommended_vf_slope);
+    if (!s_char_shadow.valid || fabsf(res->recommended_base_duty - s_char_shadow.base_duty) >= 0.1f ||
+        fabsf(res->recommended_vf_slope - s_char_shadow.vf_slope) >= 0.1f) {
+        printf("\033[22;31HBase: %4.1f %% | Slope: %4.1f %%          ", res->recommended_base_duty, res->recommended_vf_slope);
+        s_char_shadow.base_duty = res->recommended_base_duty;
         s_char_shadow.vf_slope = res->recommended_vf_slope;
+    }
+    if (!s_char_shadow.valid || fabsf(res->recommended_load_comp - s_char_shadow.load_comp) >= 0.05f) {
+        printf("\033[23;31H%5.2f V/A (IR Drop Boost)         ", res->recommended_load_comp);
+        s_char_shadow.load_comp = res->recommended_load_comp;
     }
 
     /* 5. Key actions: Row 24 */

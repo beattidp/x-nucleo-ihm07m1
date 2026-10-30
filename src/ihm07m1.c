@@ -93,6 +93,11 @@ void IHM07M1_Init(void) {
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2);
     HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_3);
 
+    /* Configure TIM1 Channel 4 to generate ADC Injected conversion trigger
+     * at PWM peak (low-side freewheeling window where all lower DMOS are conducting) */
+    sConfigOC.Pulse = IHM07M1_PWM_ARR - 20; /* 4229 counts (out of 4249) */
+    HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4);
+
     /* Configure Master Trigger Output (TRGO) on Update Event for Injected ADC synchronization */
     TIM_MasterConfigTypeDef sMasterConfig = {0};
     sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
@@ -387,13 +392,13 @@ void IHM07M1_Init(void) {
     LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_TEMP_CH, LL_ADC_SAMPLINGTIME_47CYCLES_5);
     LL_ADC_SetChannelSamplingTime(hadc1.Instance, IHM07M1_ADC_POT_CH, LL_ADC_SAMPLINGTIME_47CYCLES_5);
 
-    /* Configure ADC1 Injected Group for 3-Shunt Current Sampling (TIM1 TRGO Triggered) */
+    /* Configure ADC1 Injected Group for 3-Shunt Current Sampling (TIM1 CC4 Triggered at PWM Peak) */
     ADC_InjectionConfTypeDef sConfigInjected = {0};
     sConfigInjected.InjectedNbrOfConversion = 3;
     sConfigInjected.InjectedDiscontinuousConvMode = DISABLE;
     sConfigInjected.AutoInjectedConv = DISABLE;
     sConfigInjected.QueueInjectedContext = DISABLE;
-    sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_TRGO;
+    sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJEC_T1_CC4;
     sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONV_EDGE_RISING;
     sConfigInjected.InjecOversamplingMode = DISABLE;
     sConfigInjected.InjectedSingleDiff = ADC_SINGLE_ENDED;
@@ -424,15 +429,25 @@ void IHM07M1_Init(void) {
 
 /**
  * @brief Set L6230 current reference threshold in Amperes (via TIM16_CH1 PWM)
- *        Calibrated to match ST X-CUBE-SPN7 hardware reference:
- *        2.2 A peak = 488 counts (48.8% duty, ~1.61V on PB4).
+ *        Exact Circuit Transfer Function for X-NUCLEO-IHM07M1:
+ *        - Shunt resistance R_shunt = 0.33 Ohm
+ *        - Current sensing op-amp (U10D) bias divider: 3.3V * (680 / 2880) = 0.779V
+ *        - Overall amplifier gain Av = 1.53 -> Zero-current output V0 = 1.192V
+ *        - Current sensitivity: S = R_shunt * Av = 0.33 * 1.53 = 0.505 V/A
+ *        - Comparator input: V_CP+ = 1.192V + (0.505 V/A * I_peak)
+ *        - Reference PWM on PB4: V_ref = (pulse / 1000) * 3.30V
+ *        - Equating V_ref = V_CP+:
+ *            pulse = (1000 / 3.30) * (1.192 + 0.505 * max_amps)
+ *            pulse = 361.0f + (153.0f * max_amps)
+ *        - At 2.50A peak: pulse = 744 counts (74.4% duty, V_ref = 2.45V)
+ *        - At 2.80A peak (L6230 absolute rating): pulse = 789 counts (78.9% duty, V_ref = 2.60V)
  */
 void IHM07M1_SetCurrentReference(float max_amps) {
     if (max_amps < 0.3f) max_amps = 0.3f;
-    if (max_amps > 2.6f) max_amps = 2.6f;
+    if (max_amps > 2.8f) max_amps = 2.8f;
 
-    /* pulse = max_amps * (2000 / 4096 / 2.2) * ARR = max_amps * 221.7f */
-    uint32_t pulse = (uint32_t)(max_amps * 221.7f);
+    /* pulse = 361.0f + (max_amps * 153.0f) calibrated for U10D amplifier bias and gain */
+    uint32_t pulse = (uint32_t)(361.0f + (max_amps * 153.0f));
     if (pulse > IHM07M1_REF_ARR) pulse = IHM07M1_REF_ARR;
 
     __HAL_TIM_SET_COMPARE(&htim16, TIM_CHANNEL_1, pulse);
@@ -478,6 +493,7 @@ void IHM07M1_StartPWM(void) {
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4); /* Channel 4 triggers ADC Injected on CC4 */
     __HAL_TIM_MOE_ENABLE(&htim1);
     __HAL_TIM_ENABLE_IT(&htim1, TIM_IT_UPDATE);
 }
@@ -490,6 +506,7 @@ void IHM07M1_StopPWM(void) {
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
     HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
     __HAL_TIM_MOE_DISABLE(&htim1);
 }
 
@@ -543,43 +560,8 @@ void TIM3_IRQHandler(void) {
 
         uint32_t capture = ((uint32_t)msb_at_capture << 16) | capture_lsb;
 
-        if (s_optical_edge_state == OPTICAL_EDGE_WAIT_FALLING) {
-            uint32_t dt_since_rising = capture - s_last_rising_capture;
-            if (s_last_rising_capture != 0 && dt_since_rising < 500) {
-                __HAL_TIM_CLEAR_FLAG(&htim3, OPTICAL_TACH_TIM_FLAG_CC);
-                NVIC_ClearPendingIRQ(TIM3_IRQn);
-                return;
-            }
-
-            Motor_OpticalFallingEdgeISR(capture);
-
-            /* Switch capture polarity to RISING (wait for marker exit) */
-            TIM_CCxChannelCmd(htim3.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
-            TIM_RESET_CAPTUREPOLARITY(&htim3, OPTICAL_TACH_TIM_CHANNEL);
-            TIM_SET_CAPTUREPOLARITY(&htim3, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_RISING);
-            __HAL_TIM_CLEAR_FLAG(&htim3, OPTICAL_TACH_TIM_FLAG_CC);
-            TIM_CCxChannelCmd(htim3.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
-            __HAL_TIM_CLEAR_FLAG(&htim3, OPTICAL_TACH_TIM_FLAG_CC);
-
-            s_optical_edge_state = OPTICAL_EDGE_WAIT_RISING;
-        } else {
-            /* Marker has cleared (rising edge): record timestamp and switch polarity back to FALLING */
-            s_last_rising_capture = capture;
-
-            /* Verify line has solidly reached logic HIGH before re-arming falling edge */
-            uint32_t timeout = 500;
-            while (HAL_GPIO_ReadPin(OPTICAL_TACH_PORT, OPTICAL_TACH_PIN) == GPIO_PIN_RESET && --timeout);
-            for (volatile int i = 0; i < 200; i++);
-
-            TIM_CCxChannelCmd(htim3.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_DISABLE);
-            TIM_RESET_CAPTUREPOLARITY(&htim3, OPTICAL_TACH_TIM_CHANNEL);
-            TIM_SET_CAPTUREPOLARITY(&htim3, OPTICAL_TACH_TIM_CHANNEL, TIM_ICPOLARITY_FALLING);
-            __HAL_TIM_CLEAR_FLAG(&htim3, OPTICAL_TACH_TIM_FLAG_CC);
-            TIM_CCxChannelCmd(htim3.Instance, OPTICAL_TACH_TIM_CHANNEL, TIM_CCx_ENABLE);
-            __HAL_TIM_CLEAR_FLAG(&htim3, OPTICAL_TACH_TIM_FLAG_CC);
-
-            s_optical_edge_state = OPTICAL_EDGE_WAIT_FALLING;
-        }
+        /* Directly pass hardware falling edge capture to motor control filter */
+        Motor_OpticalFallingEdgeISR(capture);
         NVIC_ClearPendingIRQ(TIM3_IRQn);
     }
     (void)htim3.Instance->SR;
@@ -857,30 +839,45 @@ void IHM07M1_StartInjectedSampling(void) {
 }
 
 /**
- * @brief Retrieve synchronized 3-shunt currents sampled at PWM valley
- * @param ia Phase A current in Amperes
- * @param ib Phase B current in Amperes
- * @param ic Phase C current in Amperes
+ * @brief Retrieve synchronized 3-shunt currents sampled at PWM peak (low-side freewheeling)
+ * 
+ * Circuit & Timing Theory of Operation:
+ * - In center-aligned PWM mode (Mode 1), the TIM1 counter counts UP (0 -> ARR) then DOWN (ARR -> 0).
+ * - High-side DMOS are ON when CNT < CCR; low-side DMOS are ON when CNT >= CCR.
+ * - Current shunts R10, R11, R12 (0.33 Ohm) are located on the low-side return paths of the L6230.
+ * - Therefore, shunt current ONLY flows when the low-side DMOS switches conduct (freewheeling phase).
+ * - TIM1 Channel 4 compare match (CCR4 = ARR - 20 = 4229) triggers ADC1 Injected conversion
+ *   right at the peak of the PWM triangle, guaranteeing all 3 lower DMOS are ON.
+ * - By the time the TIM1 Update Interrupt (Motor_PWM_UpdateISR) executes at CNT = 0 (25 us later),
+ *   the injected conversion (duration ~1.4 us) has long completed and the results are stably
+ *   latched in JDR1, JDR2, and JDR3.
+ * - Consequently, NO blocking or polling of JEOS is required, eliminating CPU dead-time in the ISR.
+ *
+ * @param ia Output pointer for Phase A current in Amperes
+ * @param ib Output pointer for Phase B current in Amperes
+ * @param ic Output pointer for Phase C current in Amperes
  */
 void IHM07M1_GetInjectedCurrents(float* ia, float* ib, float* ic) {
-    /* Poll JEOS flag with short timeout (~400 loop spins = ~2.5 us) */
-    uint32_t timeout = 400;
-    while (!LL_ADC_IsActiveFlag_JEOS(hadc1.Instance)) {
-        if (--timeout == 0) break;
-    }
+    /* Clear JEOS flag if set to acknowledge completed sequence */
     if (LL_ADC_IsActiveFlag_JEOS(hadc1.Instance)) {
         LL_ADC_ClearFlag_JEOS(hadc1.Instance);
     }
 
+    /* Read hardware-latched injected conversion data registers */
     uint16_t raw_a = (uint16_t)hadc1.Instance->JDR1;
     uint16_t raw_b = (uint16_t)hadc1.Instance->JDR2;
     uint16_t raw_c = (uint16_t)hadc1.Instance->JDR3;
 
+    /* Subtract quiescent zero-current offsets measured during initialization */
     int32_t diff_a = (int32_t)raw_a - (int32_t)s_injected_offset_a;
     int32_t diff_b = (int32_t)raw_b - (int32_t)s_injected_offset_b;
     int32_t diff_c = (int32_t)raw_c - (int32_t)s_injected_offset_c;
 
-    const float lsb_to_amps = (3.3f / 4095.0f) / IHM07M1_CURRENT_SENSE_GAIN;
+    /* Precomputed conversion factor:
+     * V_lsb = 3.3V / 4095 = 0.00080586 V/count
+     * Sensitivity = R_shunt * OpAmp_Gain = 0.33 Ohm * 1.53 = 0.5049 V/A
+     * Scale = V_lsb / Sensitivity = 0.00080586 / 0.5049 = 0.00159608 A/count */
+    const float lsb_to_amps = 0.00159608f;
 
     if (ia) *ia = (float)diff_a * lsb_to_amps;
     if (ib) *ib = (float)diff_b * lsb_to_amps;
