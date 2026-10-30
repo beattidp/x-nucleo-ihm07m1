@@ -154,3 +154,56 @@ Extensive empirical testing was conducted across the multi-speed ladder on the 5
 - To achieve higher governed speeds ($450\text{ RPM}$, $600\text{ RPM}$):
   1. Increase the permanent magnet air gap (since $\tau \propto B^2$, increasing the gap by $1\text{--}2\text{ mm}$ drastically reduces drag, permitting $450\text{ RPM}$ and $600\text{ RPM}$ within the $32.0\%$ duty limit).
   2. Or transition to a higher-current power stage (such as the X-NUCLEO-IHM08M1 rated for $30\text{ A}_{\text{RMS}}$).
+
+---
+
+## 6. Empirical Assessment of Reduced & Lowered Magnet Configuration
+
+### 6.1 Physical Configuration & Magnetic Field Dynamics
+Following the initial multi-speed characterization, the physical test fixture was modified:
+- **Magnet Modifications**: The permanent neodymium magnet was reduced in size and physically lowered closer to the rotating copper flywheel disc face.
+- **Physical Dynamics ($B \propto 1/z^3$, $\tau \propto B^2$)**:
+  - In magnetic dipole near-fields, magnetic flux density $B(z)$ decays cubically with axial distance $z$:
+    $$B(z) \propto \frac{1}{z^3}$$
+  - While reducing the magnet volume lowered total pole face area $A$, lowering the magnet reduced the air gap $z$.
+  - Because eddy current braking torque scales **quadratically with field strength** ($\tau_{\text{eddy}} \propto B^2$), even a modest decrease in gap $z$ significantly elevates local flux density:
+    $$\tau_{\text{eddy}} \propto B(z)^2 \propto \frac{1}{z^6}$$
+  - Consequently, the heightened local magnetic flux density $B$ counteracted the reduction in magnet volume, maintaining a powerful opposing drag torque on the disc.
+
+### 6.2 Firmware Control Enhancements
+To achieve trip-free operation under the modified plant dynamics, three major control improvements were implemented:
+1. **Continuous Speed-Adaptive Safety Ceiling ($C^0$ Continuity)**:
+   - *Problem*: A discontinuous piecewise duty clamp (`if (rpm < 100) duty <= 22% else duty <= 32%`) caused a $+10\%$ step in terminal voltage within a single control millisecond ($1\text{ ms}$). Across low loop inductance ($50\,\mu\text{H}$) and resistance ($3.12\,\Omega$), this induced an immediate $3.9\text{ A}$ inrush current that tripped the L6230 comparator (`TIM1_BKIN`).
+   - *Solution*: Replaced piecewise clamping with a continuous, back-EMF-tracking ceiling:
+     $$D_{\text{max}}(\omega) = \begin{cases}
+       22.0\%, & \text{for } n \le 50\text{ RPM} \\
+       22.0\% + \left(\frac{n - 50}{200}\right) \times 10.0\%, & \text{for } 50 < n < 250\text{ RPM} \\
+       32.0\%, & \text{for } n \ge 250\text{ RPM}
+     \end{cases}$$
+   - This smoothly provides full $32.0\%$ motoring headroom at $\ge 250\text{ RPM}$ while preventing inrush during low-speed acceleration.
+
+2. **Torque-Assist Integrating Governor (`s_lag_integrator_v`)**:
+   - Gated to speeds $> 200\text{ RPM}$, an adaptive integrator accumulates $+0.50\text{ V/s}$ (up to $+2.00\text{ V}$ assist) whenever rotor drag causes trajectory ramp pauses (`!allow_ramp`), providing continuous torque boost to drive through magnetic drag.
+
+3. **Speed-Adaptive Optical Lead Margin**:
+   - Scaled the maximum stator lead angle dynamically:
+     $$\text{lead}_{\text{max}}(\text{RPM}) = 3.5\text{ RPM} + \left(\frac{\text{RPM}}{150}\right) \times 1.5\text{ RPM}$$
+   - Prevents false trajectory ramp pauses between widely spaced low-speed optical pulses while preserving a conservative $> 35^\circ$ pullout margin at higher velocities.
+
+4. **Breakaway Boost Tapering**:
+   - $V_{\text{boost}}$ begins at $4.24\text{ V}$ ($17.5\%$ duty) for instant stiction breakaway and tapers down to $3.20\text{ V}$ at $300\text{ RPM}$, freeing voltage headroom for dynamic feedforward.
+
+### 6.3 Empirical Verification Results (Four 160-Second Runs, 1,850+ Revs)
+
+| Test Run ID | Target | Duration | Revolutions | Max Optical Speed | Equilibrium Speed | Mean Current | Peak Current | Faults |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `run_20261030_013744` | 450 RPM | 160.0 s | 469 revs | 284 RPM | 284 RPM | 102.7 mA | 247 mA | **0** |
+| `run_20261030_014337` | 450 RPM | 160.0 s | 473 revs | 284 RPM | 284 RPM | 27.5 mA | 97 mA | **0** |
+| `run_20261030_015810` | 450 RPM | 160.0 s | 479 revs | 278 RPM | 278 RPM | 55.0 mA | 165 mA | **0** |
+| `run_20261030_020249` | 450 RPM | 160.0 s | 470 revs | 277 RPM | **277 ± 5 RPM** | 54.2 mA | 146 mA | **0** |
+
+### 6.4 Conclusion & Physical Equilibrium Analysis
+- **Equilibrium Limit Cycle**: In `run_20261030_020249`, the rotor accelerated monotonically to **277 RPM**, where it entered a stable physical equilibrium limit cycle across 250 continuous revolutions.
+- **Current & Power Dissipation**: Average current dropped to **54.2 mA** (peak 146 mA), representing a marked reduction from the original magnet configuration (85 mA avg / 221 mA peak).
+- **Physical Barrier**: The motor torque available at the $32.0\%$ duty limit exactly balances the eddy current drag torque $\tau_{\text{eddy}} = c \cdot B^2 \cdot \omega$ at **$277\text{ RPM}$**. Reaching higher speeds (450–600 RPM) strictly requires physically increasing the magnet vertical air gap or moving the magnet radially inward toward the rotation axis.
+

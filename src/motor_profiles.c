@@ -103,7 +103,7 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .phase_resistance_ohm = 0.50f,
         .kv_rating = 360.0f,
         .load_comp_v_per_amp = 1.50f,/* 1.50 V/A active IR compensation under eddy brake drag */
-        .eddy_damping_ma_rpm = 2.40f,/* 2.40 mA/RPM linear feedforward for permanent magnet eddy brake */
+        .eddy_damping_ma_rpm = 1.50f,/* 1.50 mA/RPM linear feedforward for reduced/lowered magnet */
         .characterized = false
     }
 };
@@ -163,14 +163,14 @@ void MotorProfiles_SaveCharacterized(float rs_ohm, float kv, float base_duty, fl
     custom->hw_break_trip_amps = s_profiles[s_active_profile_idx].hw_break_trip_amps;
     custom->min_rpm = s_profiles[s_active_profile_idx].min_rpm;
     custom->max_rpm = s_profiles[s_active_profile_idx].max_rpm;
-    custom->accel_slew_rpm_s = 60.0f; /* Match flywheel mechanical inertia to prevent stall */
-    custom->decel_slew_rpm_s = 80.0f;
+    custom->accel_slew_rpm_s = 4.0f; /* Match flywheel mechanical inertia to prevent stall */
+    custom->decel_slew_rpm_s = 50.0f;
     custom->phase_resistance_ohm = (rs_ohm > 0.1f && rs_ohm < 2.0f) ? rs_ohm : 0.50f;
     custom->kv_rating = kv;
-    custom->base_duty_pct = (base_duty < 13.5f) ? 14.0f : base_duty; /* Provide adequate breakaway torque */
+    custom->base_duty_pct = 17.5f; /* 17.5% base duty provides 4.24V breakaway torque */
     custom->vf_slope_pct = vf_slope;
-    custom->load_comp_v_per_amp = (load_comp < 1.20f) ? 1.20f : load_comp;
-    custom->eddy_damping_ma_rpm = (eddy_damping > 0.0f) ? eddy_damping : 0.50f;
+    custom->load_comp_v_per_amp = (load_comp < 1.20f) ? 1.50f : load_comp;
+    custom->eddy_damping_ma_rpm = (eddy_damping > 0.0f) ? eddy_damping : 1.50f;
     custom->characterized = true;
 
     /* Select custom profile and update drive */

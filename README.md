@@ -12,6 +12,13 @@ _Evaluate the X-NUCLEO-IHM07M1 three-phase BLDC motor driver expansion board wit
 
 ![The Console](doc/img/20261020T182853.png)
 
+Modified fixture with copper disc attached, optical tachometer moved to side and mounted permanently,
+magnets beneath for eddy current torque load.
+![Fixture with disc](doc/img/20261030T014853.jpg)
+
+Modified fixture with copper disc spinning
+![Fixture with disc spinning](doc/img/20261030T015043.jpg)
+
 ---
 
 ### Credit where Credit is Due:

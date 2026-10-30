@@ -698,10 +698,12 @@ void Motor_Update1ms(void) {
     /* 4. Determine Active Frequency, Load-Adaptive Voltage Law & Commanded Duty */
     static float s_filt_current = 0.0f;
     static uint16_t s_overcurrent_timer_ms = 0;
+    static float s_lag_integrator_v = 0.0f;
 
     if (g_motor_ctrl.state == MOTOR_STATE_STOPPED) {
         s_filt_current = 0.0f;
         s_overcurrent_timer_ms = 0;
+        s_lag_integrator_v = 0.0f;
     } else {
         /* Single-pole IIR low-pass filter (cutoff ~6 Hz) to reject switching noise */
         s_filt_current = (s_filt_current * 0.98f) + (g_telemetry.current_peak_amps * 0.02f);
@@ -877,17 +879,19 @@ void Motor_Update1ms(void) {
              * (> 2.5x revolution period), the governor softly suspends ramp progression (allow_ramp = false)
              * and catches the rotor at peak torque angle, completely eliminating pole slip trips. */
             float speed_diff = g_motor_ctrl.target_speed_rpm - g_motor_ctrl.cmd_ramp_rpm;
+            bool allow_ramp = true;
             if (speed_diff > 0.0f) {
-                bool allow_ramp = true;
                 if (g_motor_ctrl.optical_governor_enabled && g_telemetry.optical_rpm >= 35.0f) {
                     uint32_t now_ms = HAL_GetTick();
                     uint32_t dt_since_pulse = (now_ms >= s_optical_base_tick_ms) ? (now_ms - s_optical_base_tick_ms) : 0;
                     float t_rev_ms = 60000.0f / g_telemetry.optical_rpm;
 
-                    /* Softly pause ramp progression if cmd_ramp_rpm leads optical_rpm by more than 4.0 RPM
-                     * (Delta_theta_e <= 33.6 deg, safely below the 90 deg pullout limit)
+                    /* Softly pause ramp progression if cmd_ramp_rpm leads optical_rpm by more than
+                     * speed-adaptive lead threshold (4.0 RPM at 100 RPM, scaling to 6.5 RPM at 300 RPM)
+                     * (Delta_theta_e <= 45 deg, safely below the 90 deg pullout limit)
                      * or if optical pulses are overdue (> 2.5x revolution period) */
-                    if (g_motor_ctrl.cmd_ramp_rpm >= g_telemetry.optical_rpm + 4.0f ||
+                    float max_lead = 3.5f + (g_telemetry.optical_rpm / 150.0f) * 1.5f;
+                    if (g_motor_ctrl.cmd_ramp_rpm >= g_telemetry.optical_rpm + max_lead ||
                         (float)dt_since_pulse > 2.5f * t_rev_ms) {
                         allow_ramp = false;
                     }
@@ -907,6 +911,22 @@ void Motor_Update1ms(void) {
                     g_motor_ctrl.cmd_ramp_rpm = g_motor_ctrl.target_speed_rpm;
                 } else {
                     g_motor_ctrl.cmd_ramp_rpm -= decel_per_ms;
+                }
+            }
+
+            /* Torque-Assist Integrating Governor:
+             * When the trajectory ramp pauses because the rotor is lagging under eddy brake drag,
+             * integrate an adaptive torque assist voltage (+0.50 V/s) to overcome the load.
+             * Gated strictly to optical_rpm > 200 RPM where eddy brake drag becomes dominant. */
+            if (!allow_ramp && g_motor_ctrl.target_speed_rpm > g_motor_ctrl.cmd_ramp_rpm &&
+                g_telemetry.optical_rpm > 200.0f) {
+                s_lag_integrator_v += 0.0005f; /* +0.50 V/s */
+                if (s_lag_integrator_v > 2.00f) s_lag_integrator_v = 2.00f; /* Up to +2.00V assist (~8.2% duty) */
+            } else {
+                if (s_lag_integrator_v > 0.001f) {
+                    s_lag_integrator_v -= 0.0005f;
+                } else {
+                    s_lag_integrator_v = 0.0f;
                 }
             }
 
@@ -937,12 +957,17 @@ void Motor_Update1ms(void) {
 
             /* Calculate V_target using synchronized actual_speed_rpm */
             float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
-            float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
-            if (v_boost < 4.24f) v_boost = 4.24f; /* Maintain 4.24V breakaway boost against eddy brake drag */
-
             float v_ref_rpm = g_motor_ctrl.cmd_ramp_rpm;
             if (v_ref_rpm > g_motor_ctrl.target_speed_rpm) {
                 v_ref_rpm = g_motor_ctrl.target_speed_rpm;
+            }
+
+            float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
+            if (v_boost < 4.24f) v_boost = 4.24f; /* Maintain 4.24V breakaway boost against eddy brake drag */
+            if (v_ref_rpm > 50.0f) {
+                float taper = (v_ref_rpm - 50.0f) / 250.0f;
+                if (taper > 1.0f) taper = 1.0f;
+                v_boost = 4.24f - (taper * 1.04f); /* Smoothly tapers from 4.24V at 50 RPM down to 3.20V at 300 RPM */
             }
 
             float v_bemf = v_ref_rpm / kv;
@@ -977,7 +1002,7 @@ void Motor_Update1ms(void) {
              * Adds proportional rotor-lag torque boost (up to +0.60V) if rotor lags cmd_ramp_rpm. */
             float v_accel = 0.0f;
             if (v_ref_rpm > 50.0f && g_motor_ctrl.target_speed_rpm > v_ref_rpm) {
-                v_accel = 0.40f; /* Base acceleration headroom */
+                v_accel = 0.40f + s_lag_integrator_v; /* Base acceleration headroom + integrating torque assist */
 
                 /* Dynamic Rotor-Lag Torque Boost:
                  * If rotor lags behind the commanded ramp by > 2 RPM, inject proportional torque boost
@@ -1077,6 +1102,11 @@ void Motor_Update1ms(void) {
         float kv = (g_motor_ctrl.kv_rating > 50.0f) ? g_motor_ctrl.kv_rating : 360.0f;
         float v_boost = (g_motor_ctrl.duty_pct / 100.0f) * vbus_now;
         if (v_boost < 3.80f) v_boost = 3.80f; /* Maintain 3.80V baseline boost in RUNNING */
+        if (g_motor_ctrl.target_speed_rpm > 50.0f) {
+            float taper = (g_motor_ctrl.target_speed_rpm - 50.0f) / 250.0f;
+            if (taper > 1.0f) taper = 1.0f;
+            v_boost = 3.80f - (taper * 0.60f); /* Smoothly tapers from 3.80V at 50 RPM down to 3.20V at 300 RPM */
+        }
 
         float v_bemf = g_motor_ctrl.target_speed_rpm / kv;
 
@@ -1109,8 +1139,8 @@ void Motor_Update1ms(void) {
                             g_telemetry.optical_rpm : g_motor_ctrl.actual_speed_rpm;
         float speed_error = g_motor_ctrl.target_speed_rpm - rotor_speed;
         if (speed_error > 0.0f) {
-            v_restore = speed_error * 0.0060f; /* Up to +0.35V restoring boost */
-            if (v_restore > 0.35f) v_restore = 0.35f;
+            v_restore = speed_error * 0.0150f; /* Up to +1.50V restoring boost */
+            if (v_restore > 1.50f) v_restore = 1.50f;
         }
 
         float v_target = v_boost + v_bemf + v_load_comp + v_eddy + v_restore;
@@ -1202,14 +1232,16 @@ void Motor_Update1ms(void) {
          *
          * At 600 RPM (D = 32.5%), fundamental phase current is ~600 mA RMS (850 mA peak),
          * combined with switching ripple gives peak current safely below the L6230 2.0A OCD trip limit. */
-        /* Firm Hardware Safety Ceiling:
-         * 1. Standstill & Low Speed (< 100 RPM): Clamped strictly to 22.0% to prevent inductive inrush.
-         * 2. Active Acceleration & Running (>= 100 RPM): Clamped strictly to 32.0%.
-         *    Empirically verified: L6230 internal high-side DMOS comparator trips at D >= 34.0%
-         *    due to 40 kHz switching ripple on the low-inductance 50 uH windings.
-         *    32.0% duty provides maximum safe motoring torque while ensuring 100% trip immunity. */
-        if (g_motor_ctrl.actual_speed_rpm < 100.0f) {
+        /* Continuous Speed-Adaptive Hardware Safety Ceiling:
+         * 1. Standstill & Breakaway (<= 50 RPM): Clamped strictly to 22.0% to eliminate inductive inrush.
+         * 2. Low-Speed Acceleration (50 to 250 RPM): Scales smoothly from 22.0% at 50 RPM
+         *    up to 32.0% at 250 RPM as back-EMF (V_bemf = RPM / 360) and rotor speed develop.
+         * 3. High-Speed Motoring (>= 250 RPM): Full 32.0% firm hardware ceiling is available,
+         *    providing maximum safe motoring torque while ensuring 100% trip immunity against L6230 OCD. */
+        if (g_motor_ctrl.actual_speed_rpm <= 50.0f) {
             max_duty = 22.0f;
+        } else if (g_motor_ctrl.actual_speed_rpm < 250.0f) {
+            max_duty = 22.0f + ((g_motor_ctrl.actual_speed_rpm - 50.0f) / 200.0f) * 10.0f;
         } else {
             max_duty = 32.0f; /* Firm hardware safety ceiling bounded by L6230 OCD */
         }
