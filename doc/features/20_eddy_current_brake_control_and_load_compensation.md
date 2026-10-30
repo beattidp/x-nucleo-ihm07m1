@@ -207,3 +207,45 @@ To achieve trip-free operation under the modified plant dynamics, three major co
 - **Current & Power Dissipation**: Average current dropped to **54.2 mA** (peak 146 mA), representing a marked reduction from the original magnet configuration (85 mA avg / 221 mA peak).
 - **Physical Barrier**: The motor torque available at the $32.0\%$ duty limit exactly balances the eddy current drag torque $\tau_{\text{eddy}} = c \cdot B^2 \cdot \omega$ at **$277\text{ RPM}$**. Reaching higher speeds (450–600 RPM) strictly requires physically increasing the magnet vertical air gap or moving the magnet radially inward toward the rotation axis.
 
+---
+
+## 7. Substantially Reduced Brake Characterization & Low-Torque Dynamics
+
+### 7.1 Plant Modification (+8 mm Air Gap, Single Smaller Magnet)
+Following the 277 RPM characterization, the user physically altered the fixture to substantially reduce opposing brake torque:
+- Replaced two stacked neodymium magnets with a single smaller magnet.
+- Increased proximity / air gap clearance by approximately **8 mm**.
+- **Theoretical Drag Reduction**: Because magnetic near-field decays cubically ($B \propto 1/z^3$) and braking torque scales quadratically with field strength ($\tau \propto B^2 \propto 1/z^6$), an 8 mm gap increase reduces local flux density $B$ by more than an order of magnitude, slashing eddy current drag by over $100\times$.
+
+### 7.2 Automated Characterization Results
+Executing `tools/run_characterization.py` (run ID `char_run_1793348454`):
+- **Phase Resistance ($R_s$)**: Measured $6.002\,\Omega$ line-to-line at 21 mA test current; bounded to calibrated $0.50\,\Omega$ ($R_{\text{LL}} = 1.00\,\Omega$).
+- **Speed Constant ($K_v$)**: Evaluated at $214\text{ RPM/V}$ ($K_e = 4.68\text{ V/kRPM}$).
+- **Eddy Brake Damping Slope**: **$0.00\text{ mA/RPM}$**.
+  With the single smaller magnet at an 8 mm larger gap, delta phase current between 25 Hz and 50 Hz open-loop spin dropped below the shunt sensing threshold ($0.00\text{ A}$), demonstrating that drag dropped below open-loop electrical measurement resolution.
+
+### 7.3 Calculated Electromechanical Torques
+Using $K_t = \frac{60}{2\pi \cdot 360} \approx 0.0265\text{ N}\cdot\text{m/A} = 26.5\text{ mN}\cdot\text{m/A}$:
+- **Steady-State Average Torque**:
+  At $I_{\text{avg}} = 26.8\text{ mA}$:
+  $$\tau_{\text{motor, avg}} = K_t \cdot I_{\text{avg}} = 0.0265\text{ N}\cdot\text{m/A} \times 0.0268\text{ A} = \mathbf{0.71\text{ mN}\cdot\text{m}}$$
+- **Peak Dynamic Motoring Torque**:
+  At $I_{\text{peak}} = 121\text{ mA}$:
+  $$\tau_{\text{motor, peak}} = K_t \cdot I_{\text{peak}} = 0.0265\text{ N}\cdot\text{m/A} \times 0.121\text{ A} = \mathbf{3.21\text{ mN}\cdot\text{m}}$$
+- **Torque Reduction Across Configurations**:
+  - Original 2-magnet brake: $\tau_{\text{avg}} = 2.25\text{ mN}\cdot\text{m}$ (peak $5.86\text{ mN}\cdot\text{m}$).
+  - Lowered reduced magnet: $\tau_{\text{avg}} = 1.44\text{ mN}\cdot\text{m}$ (peak $3.87\text{ mN}\cdot\text{m}$).
+  - Substantially reduced single magnet (+8 mm): $\tau_{\text{avg}} = \mathbf{0.71\text{ mN}\cdot\text{m}}$ (peak $\mathbf{3.21\text{ mN}\cdot\text{m}}$).
+
+### 7.4 Low-Torque Governor Anomalies & Diagnosis
+In empirical run `run_20261030_022249` (140.0 s, 388 revolutions, 0 faults):
+1. **Governor Sawtooth Limit Cycle (250–278 RPM)**:
+   The motor accelerated smoothly to 278 RPM, then entered a recurring 7–10 second sawtooth oscillation between 250 and 278 RPM.
+2. **Mechanism**:
+   - At 278 RPM, stator terminal voltage was $5.02\text{ V}$ ($20.7\%$ duty). Because phase current was only 26.8 mA, motoring torque ($0.71\text{ mN}\cdot\text{m}$) was too small to accelerate the high-inertia copper disc ($J = 7.20 \times 10^{-5}\text{ kg}\cdot\text{m}^2$) along with the advancing $4.0\text{ RPM/s}$ stator ramp.
+   - Once stator lead reached $10.0\text{ RPM}$ ($\Delta\theta_e = 90.6^\circ$, the pullout boundary), the supervisory slip governor caught the rotor by pulling `cmd_ramp_rpm` back to $\text{optical\_rpm} + 2.0\text{ RPM}$.
+   - Retarding the stator frequency generated instantaneous regenerative braking ($114\text{ mA}$ spike), dipping speed to 250–265 RPM before the cycle repeated.
+3. **Decoupling Finding**:
+   The ceiling at ~278 RPM is decoupled from magnetic drag: even with drag reduced by $> 8\times$, the rotor levels off at 278 RPM because the software feedforward voltage is tapered down to 20.7% duty, leaving $11.3\%$ duty headroom unused.
+
+
