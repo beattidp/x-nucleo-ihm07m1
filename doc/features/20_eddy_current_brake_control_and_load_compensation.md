@@ -248,4 +248,42 @@ In empirical run `run_20261030_022249` (140.0 s, 388 revolutions, 0 faults):
 3. **Decoupling Finding**:
    The ceiling at ~278 RPM is decoupled from magnetic drag: even with drag reduced by $> 8\times$, the rotor levels off at 278 RPM because the software feedforward voltage is tapered down to 20.7% duty, leaving $11.3\%$ duty headroom unused.
 
+---
+
+## 8. Wide-Range High-Speed BLDC Operation (100 to 3000+ RPM) & Phased Roadmap
+
+### 8.1 Physical Feasibility & Back-EMF Scaled Duty Headroom
+- **Theoretical No-Load Limit**: With $K_v = 360\text{ RPM/V}$ and $V_{\text{bus}} = 24.25\text{ V}_{\text{DC}}$, $n_{\text{no-load}} = 360 \times 24.25 \approx 8730\text{ RPM}$.
+- **Empirical Validation**: In milestone `v1.3`, bare rotor operation was demonstrated up to 4,000 RPM.
+- **Speed-Adaptive Duty Curve**: Duty ceiling scales continuously with rotor back-EMF ($E_{\text{bemf}} = \text{RPM} / 360$):
+  - $\le 35\text{ RPM}$: $22.0\%$ (standstill inrush protection).
+  - $180\text{--}260\text{ RPM}$ (Resonance zone): Strictly bounded to $\le 31.2\%$ (guaranteeing peak switching ripple $+$ load current $< 1.95\text{ A} < 2.00\text{ A}$ L6230 comparator threshold).
+  - $350\text{--}600\text{ RPM}$: Scales from $33.5\%$ to $45.0\%$.
+  - $600\text{--}1200\text{ RPM}$: Scales from $48.0\%$ to $60.0\%$.
+  - $1200\text{--}3000\text{ RPM}$: Scales from $60.0\%$ to $75.0\%$ ($18.2\text{ V}$ terminal voltage, overcoming $8.33\text{ V}$ back-EMF).
+
+### 8.2 Resonance Mechanics & Kinematic Lead Calibration
+1. **Natural Resonance Frequency**: $f_n = \frac{1}{2\pi}\sqrt{\frac{K_{\text{torsion}}}{J}} \approx 3.8\text{--}4.0\text{ Hz} \iff 206\text{--}242.5\text{ RPM}$.
+2. **Torque Angle Sensitivity**: In 7 pole-pair machine, $\Delta\theta_e = 2520^\circ \times (\Delta n / n_{\text{rotor}})$. Pullout boundary ($\delta_e = 90^\circ$) occurs at $\Delta n = 7.14\text{ RPM}$ at 200 RPM.
+3. **Kinematic Latency**: 1-pulse/rev optical sensor latency over half revolution is $\Delta n_{\text{latency}} = \alpha \cdot T_{\text{rev}} / 2 \approx 4.2\text{ RPM}$.
+4. **Calibrated Supervisory Lead Ceiling**:
+   $$\text{max\_allowed\_lead} = \frac{n_{\text{rotor}}}{100} + \left(\alpha \cdot \frac{T_{\text{rev}}}{2000}\right) + 2.5\text{ RPM}$$
+   Evaluates to $8.5\text{--}9.5\text{ RPM}$ at 200 RPM, maintaining $\delta_e \le 55^\circ \ll 90^\circ$.
+5. **Continuous Soft-Pausing**: Discontinued hard step assignments in favor of `allow_ramp = false`, eliminating inductive voltage/current spikes.
+6. **High-Speed Governor Bypass**: Above 350 RPM ($f_e > 40.8\text{ Hz} \gg 4.0\text{ Hz}$), micro-pausing is disabled, retaining only gross stall detection ($n_{\text{cmd}} > 1.30 \times n_{\text{rotor}} + 50$).
+
+### 8.3 Controlled 600 RPM Step Deceleration
+- Deceleration slew: $80.0\text{ RPM/s}$.
+- Positive motoring bias: $V_{\text{accel}} = +1.20\text{ V}$ maintains positive motoring current ($I_q > 0$), preventing reverse current regeneration into the bench power supply ($V_{\text{bus}} \le 24.30\text{ V}$).
+
+### 8.4 Four-Phase Quantifiable Milestone Roadmap
+
+| Phase | Milestone Tag | Objective | Duration Estimate | Deliverable |
+|:---|:---|:---|:---|:---|
+| **Phase 1** | `v1.7-resonance-punchthrough` | Resonance traverse & 300 RPM steady hold | 2–3 hours | 300 RPM hold for 15s+, zero trips |
+| **Phase 2** | `v1.8-midspeed-ladder` | Mid-speed plateaus (600, 1200, 1800 RPM) | 3–4 hours | 12s plateaus, smooth 350 RPM handover |
+| **Phase 3** | `v1.9-wide-range-3000rpm` | High-speed ladder up to 3000+ RPM | 3–4 hours | 3000 RPM in $\le 45\text{s}$, $I_{\text{avg}} < 300\text{ mA}$ |
+| **Phase 4** | `v2.0-wide-range-complete` | 600 RPM step deceleration ($3000 \to 300\text{ RPM}$) | 3–4 hours | $V_{\text{bus}} \le 24.30\text{ V}$, zero regeneration |
+
+
 

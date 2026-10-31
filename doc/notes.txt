@@ -65,3 +65,7 @@ Or, if this can be stored in on-chip configuration memory, that might be a poten
 interface board ("XL335B")
 ADXL335BCPZ accelerometer
 
+Please add maximum rpm observed ('Max') on the Optical Tachometer line of the console, and an SCPI command to retrieve it). This is implicitly reset to zero at the start of run, but persists until exiting stopped state.
+
+Would the SCPI interface be more efficient than scraping the console data?
+

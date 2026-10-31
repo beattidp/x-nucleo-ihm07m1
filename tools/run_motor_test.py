@@ -100,14 +100,37 @@ def adjust_target_rpm(session_id, target_rpm):
     print(f"Set target RPM directly to {target_rpm} RPM.")
 
 
-def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0, slew_rate=None):
-    """Applies profile, speed, and duty configurations while stopped."""
+def set_governor_state(session_id, enabled):
+    """Ensures optical governor matches desired state (True = ON, False = OFF)."""
+    snapshot_file = "/tmp/motor_gov_snap.txt"
+    capture_snapshot(session_id, snapshot_file)
+    with open(snapshot_file, "r", encoding="utf-8", errors="replace") as f:
+        snap = f.read()
+    try:
+        os.remove(snapshot_file)
+    except OSError:
+        pass
+
+    current_on = "GOVERNOR (ON)" in snap
+    if current_on != enabled:
+        print(f"Toggling Optical Governor to {'ON' if enabled else 'OFF'} ('g')...")
+        send_keystroke(session_id, "g")
+        time.sleep(0.3)
+    else:
+        print(f"Optical Governor already {'ON' if enabled else 'OFF'}.")
+
+
+def configure_test(session_id, profile=None, target_rpm=None, duty_adjust=0, slew_rate=None, governor=None):
+    """Applies profile, speed, duty, and governor configurations while stopped."""
     if profile is not None:
         if profile not in [1, 2, 3, 4]:
             raise ValueError(f"Invalid profile {profile}. Must be 1, 2, 3, or 4.")
         print(f"Selecting Motor Profile {profile}...")
         send_keystroke(session_id, str(profile))
         time.sleep(0.3)
+
+    if governor is not None:
+        set_governor_state(session_id, governor)
 
     if slew_rate is not None:
         print(f"Setting slew rate directly to {int(slew_rate)} RPM/s...")
@@ -302,6 +325,8 @@ def main():
     parser.add_argument("--step-duration", type=float, default=12.0, help="Duration per speed step in seconds (default: 12.0s)")
     parser.add_argument("--duty-adjust", type=int, default=0, help="Duty adjustment steps (+ for ], - for [)")
     parser.add_argument("--slew", type=float, default=None, help="Acceleration & deceleration slew rate in RPM/s (e.g. 500, 1000)")
+    parser.add_argument("--no-governor", action="store_true", help="Disable optical governor (pure synchronous drive with CORDIC Id damping)")
+    parser.add_argument("--governor", action="store_true", help="Explicitly enable optical governor")
     parser.add_argument("--duration", "-d", type=float, default=6.0, help="Run duration in seconds (default: 6.0s)")
     parser.add_argument("--output-dir", default="test_runs", help="Directory to save logs and CSVs")
     args = parser.parse_args()
@@ -324,10 +349,16 @@ def main():
     else:
         init_rpm = args.rpm
 
+    gov_setting = None
+    if args.no_governor:
+        gov_setting = False
+    elif args.governor:
+        gov_setting = True
+
     print(f"Starting automated motor test on screen session '{session_id}'...")
     ensure_stopped(session_id)
 
-    configure_test(session_id, profile=args.profile, target_rpm=init_rpm, duty_adjust=args.duty_adjust, slew_rate=args.slew)
+    configure_test(session_id, profile=args.profile, target_rpm=init_rpm, duty_adjust=args.duty_adjust, slew_rate=args.slew, governor=gov_setting)
 
     # Start stream logging
     start_logging(session_id, log_file, redraw=True)
@@ -352,7 +383,7 @@ def main():
         print(f"Commanding MOTOR START (SPACE) -- Running for {args.duration:.1f} seconds...")
         send_keystroke(session_id, "space")
         try:
-            time.sleep(args.duration)
+            wait_step_duration(session_id, log_file, args.duration)
         finally:
             print("Commanding MOTOR STOP (SPACE)...")
             send_keystroke(session_id, "space")

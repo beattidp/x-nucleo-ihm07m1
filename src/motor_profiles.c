@@ -96,14 +96,14 @@ static MotorProfile_t s_profiles[MOTOR_PROFILE_COUNT] = {
         .hw_break_trip_amps = 2.50f,
         .min_rpm = 100.0f,
         .max_rpm = 4000.0f,
-        .base_duty_pct = 17.5f,      /* 17.5% base duty provides 4.24V breakaway torque (1.36A peak) */
+        .base_duty_pct = 21.0f,      /* 21.0% base duty provides 5.09V starting boost & magnetic spring stiffness */
         .vf_slope_pct = 38.0f,
-        .accel_slew_rpm_s = 4.0f,    /* 4.0 RPM/s matched acceleration for copper flywheel under eddy brake */
-        .decel_slew_rpm_s = 50.0f,   /* Smooth deceleration utilizing eddy current brake damping */
+        .accel_slew_rpm_s = 45.0f,   /* 45.0 RPM/s agile acceleration for copper flywheel under reduced eddy brake */
+        .decel_slew_rpm_s = 80.0f,   /* 80.0 RPM/s controlled deceleration matching eddy current brake damping */
         .phase_resistance_ohm = 0.50f,
         .kv_rating = 360.0f,
         .load_comp_v_per_amp = 1.50f,/* 1.50 V/A active IR compensation under eddy brake drag */
-        .eddy_damping_ma_rpm = 1.50f,/* 1.50 mA/RPM linear feedforward for reduced/lowered magnet */
+        .eddy_damping_ma_rpm = 0.25f,/* 0.25 mA/RPM calibrated feedforward for reduced single-magnet brake (+8mm gap) */
         .characterized = false
     }
 };
@@ -163,14 +163,14 @@ void MotorProfiles_SaveCharacterized(float rs_ohm, float kv, float base_duty, fl
     custom->hw_break_trip_amps = s_profiles[s_active_profile_idx].hw_break_trip_amps;
     custom->min_rpm = s_profiles[s_active_profile_idx].min_rpm;
     custom->max_rpm = s_profiles[s_active_profile_idx].max_rpm;
-    custom->accel_slew_rpm_s = 4.0f; /* Match flywheel mechanical inertia to prevent stall */
+    custom->accel_slew_rpm_s = 25.0f; /* 25.0 RPM/s acceleration for 90g copper flywheel under reduced brake */
     custom->decel_slew_rpm_s = 50.0f;
     custom->phase_resistance_ohm = (rs_ohm > 0.1f && rs_ohm < 2.0f) ? rs_ohm : 0.50f;
-    custom->kv_rating = kv;
+    custom->kv_rating = (kv >= 300.0f && kv <= 450.0f) ? kv : 360.0f;
     custom->base_duty_pct = 17.5f; /* 17.5% base duty provides 4.24V breakaway torque */
     custom->vf_slope_pct = vf_slope;
     custom->load_comp_v_per_amp = (load_comp < 1.20f) ? 1.50f : load_comp;
-    custom->eddy_damping_ma_rpm = (eddy_damping > 0.0f) ? eddy_damping : 1.50f;
+    custom->eddy_damping_ma_rpm = (eddy_damping > 0.0f) ? eddy_damping : 0.25f;
     custom->characterized = true;
 
     /* Select custom profile and update drive */
